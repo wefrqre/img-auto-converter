@@ -1,0 +1,8 @@
+release.env
+.build-venv/
+.pyinstaller/
+build/
+dist/
+release/
+__pycache__/
+*.pyc
