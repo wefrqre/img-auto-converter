@@ -97,7 +97,9 @@ APP_NAME = "응용이미지자동화 변환기"
 CONFIG_PATH = Path.home() / ".applied_image_auto_converter.json"
 DEFAULT_BASE_DIR = Path.home() / "Desktop" / "figma_exports"
 DEFAULT_INPUT_DIR = DEFAULT_BASE_DIR / "svg"
-DEFAULT_OUTPUT_DIR = DEFAULT_BASE_DIR / "png_96dpi"
+DEFAULT_DPI = 96
+DPI_OPTIONS = (96, 192)
+DEFAULT_OUTPUT_DIR = DEFAULT_BASE_DIR / f"png_{DEFAULT_DPI}dpi"
 PATH_HINTS = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
 WATCH_EXTENSIONS = {".svg"}
 DIRECT_TOOL_PATHS = {
@@ -187,7 +189,7 @@ def detect_tools() -> ToolPaths:
     )
 
 
-def load_config() -> dict[str, str]:
+def load_config() -> dict[str, object]:
     if not CONFIG_PATH.exists():
         return {}
 
@@ -197,10 +199,11 @@ def load_config() -> dict[str, str]:
         return {}
 
 
-def save_config(input_dir: Path, output_dir: Path) -> None:
+def save_config(input_dir: Path, output_dir: Path, dpi: int) -> None:
     payload = {
         "input_dir": str(input_dir),
         "output_dir": str(output_dir),
+        "dpi": dpi,
     }
     CONFIG_PATH.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -210,6 +213,21 @@ def save_config(input_dir: Path, output_dir: Path) -> None:
 
 def ensure_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+
+def normalize_dpi(value: object) -> int:
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_DPI
+    if numeric in DPI_OPTIONS:
+        return numeric
+    return DEFAULT_DPI
+
+
+def output_dir_for_dpi(dpi: int) -> Path:
+    safe_dpi = normalize_dpi(dpi)
+    return DEFAULT_BASE_DIR / f"png_{safe_dpi}dpi"
 
 
 def is_svg_file(path: Path) -> bool:
@@ -256,10 +274,13 @@ class App:
         self.worker_lock = threading.Lock()
         self.stop_requested = False
 
+        config = load_config()
+        self.selected_dpi = normalize_dpi(config.get("dpi"))
         self.input_dir = DEFAULT_INPUT_DIR
-        self.output_dir = DEFAULT_OUTPUT_DIR
+        self.output_dir = output_dir_for_dpi(self.selected_dpi)
         self.first_launch_setup()
 
+        self.dpi_value = tk.IntVar(value=self.selected_dpi)
         self.status_text = tk.StringVar(value="대기 중")
         self.status_display_text = tk.StringVar(value="상태: 대기 중")
         self.dependency_text = tk.StringVar(value=self.dependency_summary())
@@ -274,6 +295,8 @@ class App:
 
         if self.tool_paths.missing:
             self.show_dependency_warning()
+        else:
+            self.root.after(200, self.start_watch)
 
     def first_launch_setup(self) -> None:
         created: list[Path] = []
@@ -282,7 +305,7 @@ class App:
                 ensure_directory(directory)
                 created.append(directory)
 
-        save_config(self.input_dir, self.output_dir)
+        save_config(self.input_dir, self.output_dir, self.selected_dpi)
 
         if created:
             created_text = "\n".join(str(path) for path in created)
@@ -335,6 +358,29 @@ class App:
             pady=18,
         )
         card.pack(fill="x", pady=(16, 0))
+
+        dpi_row = tk.Frame(card, bg="#ffffff")
+        dpi_row.pack(fill="x", pady=(0, 14))
+
+        for index, dpi in enumerate(DPI_OPTIONS):
+            dpi_radio = tk.Radiobutton(
+                dpi_row,
+                text=f"{dpi} DPI",
+                variable=self.dpi_value,
+                value=dpi,
+                command=self.set_dpi,
+                font=("Helvetica Neue", 11, "bold"),
+                bg="#ffffff",
+                fg="#111111",
+                activebackground="#ffffff",
+                activeforeground="#111111",
+                selectcolor="#ffffff",
+                padx=4,
+                pady=0,
+                highlightthickness=0,
+                cursor="hand2",
+            )
+            dpi_radio.grid(row=0, column=index, padx=(0, 18), sticky="w")
 
         grid_actions = tk.Frame(card, bg="#ffffff")
         grid_actions.pack()
@@ -454,6 +500,7 @@ class App:
             APP_NAME,
             "현재 설정\n\n"
             f"상태: {self.status_text.get()}\n"
+            f"DPI: {self.dpi_value.get()}\n"
             f"{self.dependency_text.get()}\n\n"
             f"기본 폴더:\n{DEFAULT_BASE_DIR}\n\n"
             f"입력 폴더:\n{self.input_dir}\n\n"
@@ -485,7 +532,18 @@ class App:
         self.open_folder(self.output_dir)
 
     def refresh_paths(self) -> None:
-        save_config(self.input_dir, self.output_dir)
+        save_config(self.input_dir, self.output_dir, self.dpi_value.get())
+
+    def set_dpi(self, dpi: int | None = None) -> None:
+        if dpi is None:
+            selected = normalize_dpi(self.dpi_value.get())
+        else:
+            selected = normalize_dpi(dpi)
+        self.selected_dpi = selected
+        self.dpi_value.set(selected)
+        self.output_dir = output_dir_for_dpi(selected)
+        ensure_directory(self.output_dir)
+        self.refresh_paths()
 
     def set_status(self, message: str) -> None:
         self.status_text.set(message)
@@ -496,7 +554,7 @@ class App:
 
         bar_fill = "#ffffff"
         text_fill = "#111111"
-        if "감시 중" in message:
+        if "자동 변환 활성화" in message:
             bar_fill = "#eaf3ff"
             text_fill = "#0066cc"
         elif "변환 중" in message:
@@ -551,16 +609,17 @@ class App:
 
     def create_default_folders(self) -> None:
         ensure_directory(DEFAULT_INPUT_DIR)
-        ensure_directory(DEFAULT_OUTPUT_DIR)
+        current_output_dir = output_dir_for_dpi(self.dpi_value.get())
+        ensure_directory(current_output_dir)
         self.input_dir = DEFAULT_INPUT_DIR
-        self.output_dir = DEFAULT_OUTPUT_DIR
+        self.output_dir = current_output_dir
         self.refresh_paths()
         self.set_status("기본 폴더 준비 완료")
         messagebox.showinfo(
             APP_NAME,
             "기본 폴더를 준비했습니다.\n\n"
             f"입력: {DEFAULT_INPUT_DIR}\n"
-            f"출력: {DEFAULT_OUTPUT_DIR}",
+            f"출력: {current_output_dir}",
         )
 
     def show_dependency_warning(self) -> None:
@@ -587,7 +646,7 @@ class App:
 
     def start_watch(self) -> None:
         if self.observer:
-            self.set_status("이미 감시 중...")
+            self.set_status("자동 변환 활성화")
             return
 
         if not self.refresh_tools():
@@ -606,7 +665,7 @@ class App:
         handler = SvgEventHandler(self.enqueue_event)
         self.observer.schedule(handler, str(self.input_dir), recursive=False)
         self.observer.start()
-        self.set_status("감시 중...")
+        self.set_status("자동 변환 활성화")
         self.open_folder(self.input_dir)
 
     def stop_watch(self) -> None:
@@ -723,7 +782,7 @@ class App:
                 "-units",
                 "PixelsPerInch",
                 "-density",
-                "96",
+                str(self.dpi_value.get()),
                 "-alpha",
                 "on",
                 "-background",
