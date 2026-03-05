@@ -870,29 +870,39 @@ class App(QtWidgets.QWidget):
         history_header_widget = ClickableFrame()
         history_header_widget.setObjectName("historyHeader")
         history_header_widget.setFixedHeight(20)
+        history_header_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+        )
         history_header_widget.setCursor(QtCore.Qt.PointingHandCursor)
         history_header_widget.clicked.connect(self.toggle_bottom_section)
         history_header = QtWidgets.QHBoxLayout(history_header_widget)
         history_header.setContentsMargins(0, 0, 0, 0)
-        history_header.setSpacing(4)
+        history_header.setSpacing(0)
 
         history_title = QtWidgets.QLabel("변환 내역")
         history_title.setObjectName("panelTitle")
+        history_title.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         history_header.addWidget(history_title, 0, QtCore.Qt.AlignVCenter)
+        history_header.addSpacing(4)
 
         self.history_count_label = QtWidgets.QLabel()
         self.history_count_label.setStyleSheet(
             "color: #9D9D9D; font-size: 12px; font-weight: 600;"
         )
+        self.history_count_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed
+        )
+        self.history_count_label.setContentsMargins(0, 0, 0, 0)
         self.history_count_label.hide()
-        history_header.addWidget(self.history_count_label, 0, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        history_header.addWidget(self.history_count_label, 0, QtCore.Qt.AlignVCenter)
+        history_header.addStretch(1)
         left_col.addWidget(history_header_widget, 0)
         left_col.addSpacing(4)
 
         log_card = self._build_card()
         log_card.setFixedHeight(236)
         log_layout = QtWidgets.QVBoxLayout(log_card)
-        log_layout.setContentsMargins(8, 8, 16, 14)
+        log_layout.setContentsMargins(0, 8, 16, 14)
         log_layout.setSpacing(0)
 
         log_stack_host = QtWidgets.QWidget()
