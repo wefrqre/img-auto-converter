@@ -5,6 +5,8 @@ datas = [
     ("README.md", "."),
     ("bundle_bin", "bin"),
     ("app_icon.png", "."),
+    ("info.svg", "."),
+    ("arrow_down.svg", "."),
     ("Vector.svg", "."),
 ]
 
