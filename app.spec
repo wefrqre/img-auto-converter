@@ -4,6 +4,8 @@
 datas = [
     ("README.md", "."),
     ("bundle_bin", "bin"),
+    ("app_icon.png", "."),
+    ("Vector.svg", "."),
 ]
 
 
@@ -31,7 +33,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
 )
 
@@ -40,14 +42,7 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name="응용이미지자동화 변환기",
-)
-
-app = BUNDLE(
-    coll,
-    name="응용이미지자동화 변환기.app",
-    icon=None,
-    bundle_identifier="com.local.applied-image-auto-converter",
 )

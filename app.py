@@ -68,7 +68,7 @@ except ModuleNotFoundError:
                 return {}
 
             current: dict[str, float] = {}
-            for path in self._watch_path.iterdir():
+            for path in self._watch_path.rglob("*"):
                 if not path.is_file() or not is_svg_file(path):
                     continue
                 try:
@@ -92,6 +92,8 @@ except ModuleNotFoundError:
 
 APP_NAME = "응용이미지자동화 변환기"
 CONFIG_PATH = Path.home() / ".applied_image_auto_converter.json"
+APP_ICON_FILENAME = "app_icon.png"
+FOLDER_ICON_FILENAMES = ("vector.svg", "Vector.svg")
 DEFAULT_BASE_DIR = Path.home() / "Desktop" / "figma_exports"
 DEFAULT_INPUT_DIR = DEFAULT_BASE_DIR / "svg"
 DEFAULT_DPI = 96
@@ -105,6 +107,21 @@ DIRECT_TOOL_PATHS = {
     ],
     "magick": [],
 }
+
+
+def resource_path(filename: str) -> Path:
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / filename)
+        candidates.append(Path(sys.executable).resolve().parent.parent / "Resources" / filename)
+    candidates.append(Path(__file__).resolve().parent / filename)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[-1]
 
 
 @dataclass
@@ -239,6 +256,14 @@ def output_dir_for_dpi(dpi: int) -> Path:
     return DEFAULT_BASE_DIR / f"png_{safe_dpi}dpi"
 
 
+def format_file_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes / (1024 * 1024):.2f} MB"
+
+
 def is_svg_file(path: Path) -> bool:
     return path.suffix.lower() in WATCH_EXTENSIONS
 
@@ -279,6 +304,11 @@ class App(QtWidgets.QWidget):
         self.tool_paths = detect_tools()
         self.event_queue: queue.Queue[Path] = queue.Queue()
         self.debounce_jobs: dict[str, QtCore.QTimer] = {}
+        self.pending_convert_paths: list[Path] = []
+        self.pending_convert_keys: set[str] = set()
+        self.processing_convert_queue = False
+        self.last_processed_svg_mtimes: dict[str, float] = {}
+        self.watch_started_at = 0.0
         self.observer: Observer | None = None
         self.worker_lock = threading.Lock()
         self.stop_requested = False
@@ -290,10 +320,13 @@ class App(QtWidgets.QWidget):
         self.status_text = "대기 중"
         self.log_messages: list[str] = []
 
+        self.status_dot: QtWidgets.QFrame | None = None
         self.status_label: QtWidgets.QLabel | None = None
-        self.folder_button: QtWidgets.QPushButton | None = None
+        self.folder_button: QtWidgets.QToolButton | None = None
         self.dpi_buttons: dict[int, QtWidgets.QRadioButton] = {}
         self.log_list: QtWidgets.QListWidget | None = None
+        self.log_items_by_file: dict[str, QtWidgets.QListWidgetItem] = {}
+        self.history_count_label: QtWidgets.QLabel | None = None
         self.info_labels: dict[str, QtWidgets.QLabel] = {}
         self.startup_warning: str | None = None
 
@@ -312,6 +345,10 @@ class App(QtWidgets.QWidget):
         self.poll_timer = QtCore.QTimer(self)
         self.poll_timer.timeout.connect(self.poll_events)
         self.poll_timer.start(300)
+
+        self.rescan_timer = QtCore.QTimer(self)
+        self.rescan_timer.setSingleShot(True)
+        self.rescan_timer.timeout.connect(self.reconcile_recent_svgs)
 
         if self.tool_paths.missing:
             self.show_dependency_warning()
@@ -375,9 +412,9 @@ class App(QtWidgets.QWidget):
                 font-weight: 700;
             }
             QLabel#heroSubtitle {
-                color: #6d6d72;
+                color: #6F6F6F;
                 font-size: 12px;
-                font-weight: 500;
+                font-weight: 400;
             }
             QLabel#rowLabel {
                 color: #6d6d72;
@@ -394,13 +431,18 @@ class App(QtWidgets.QWidget):
                 font-size: 13px;
                 font-weight: 600;
             }
+            QFrame#statusDot {
+                background: #23914a;
+                border: none;
+                border-radius: 4px;
+            }
             QFrame#card {
                 background: #ffffff;
                 border: 1px solid #efeff4;
                 border-radius: 8px;
             }
             QPushButton#primaryButton {
-                background: #1569d8;
+                background: #6A6A6A;
                 color: #ffffff;
                 border: none;
                 border-radius: 8px;
@@ -409,13 +451,22 @@ class App(QtWidgets.QWidget):
                 font-weight: 600;
             }
             QPushButton#primaryButton:hover {
-                background: #105cc0;
+                background: #5B5B5B;
+            }
+            QToolButton#folderIconButton {
+                background: transparent;
+                border: none;
+                padding: 0px;
+            }
+            QToolButton#folderIconButton:hover {
+                background: rgba(0, 0, 0, 0.05);
+                border-radius: 6px;
             }
             QRadioButton {
                 background: transparent;
                 color: #111111;
                 font-size: 12px;
-                font-weight: 500;
+                font-weight: 400;
                 spacing: 8px;
             }
             QListWidget#selectionList {
@@ -425,12 +476,34 @@ class App(QtWidgets.QWidget):
                 font-size: 11px;
             }
             QListWidget#selectionList::item {
-                padding: 8px 10px;
+                padding: 8px 6px;
+                margin: 0px 2px;
             }
             QListWidget#selectionList::item:selected {
                 background: #eaf3ff;
                 color: #111111;
                 border-radius: 8px;
+                margin: 0px 1px;
+            }
+            QScrollBar:vertical {
+                background: transparent;
+                width: 3px;
+                margin: 2px 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #c7c7cc;
+                min-height: 24px;
+                border-radius: 20px;
+            }
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {
+                height: 0px;
+                background: transparent;
+                border: none;
+            }
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {
+                background: transparent;
             }
             QLabel#infoKey {
                 color: #6b7280;
@@ -463,18 +536,36 @@ class App(QtWidgets.QWidget):
         hero_title.setObjectName("heroTitle")
         header_text_col.addWidget(hero_title)
 
-        hero_subtitle = QtWidgets.QLabel("Figma에서 SVG 파일을 Input 폴더에 저장하면 PNG로 자동 변환됩니다.")
+        hero_subtitle = QtWidgets.QLabel(
+            'Figma에서 SVG 파일을 <a href="input-folder" '
+            'style="color:#1987FF; text-decoration: underline; font-weight:700;">'
+            "폴더(svg)"
+            "</a>에 저장하면 PNG로 자동 변환됩니다."
+        )
         hero_subtitle.setObjectName("heroSubtitle")
         hero_subtitle.setWordWrap(True)
+        hero_subtitle.setTextFormat(QtCore.Qt.RichText)
+        hero_subtitle.setTextInteractionFlags(QtCore.Qt.TextBrowserInteraction)
+        hero_subtitle.setOpenExternalLinks(False)
+        hero_subtitle.linkActivated.connect(lambda _link: self.open_base_dir())
         header_text_col.addWidget(hero_subtitle)
 
         header_row.addLayout(header_text_col, 1)
         main_layout.addLayout(header_row)
 
-        main_layout.addSpacing(28)
+        main_layout.addSpacing(18)
+
+        header_divider = QtWidgets.QFrame()
+        header_divider.setFixedHeight(1)
+        header_divider.setStyleSheet(
+            "QFrame { background: #E8E8E8; border: none; }"
+        )
+        main_layout.addWidget(header_divider)
+
+        main_layout.addSpacing(20)
 
         status_row = QtWidgets.QHBoxLayout()
-        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setContentsMargins(8, 0, 0, 0)
         status_row.setSpacing(16)
 
         status_title = QtWidgets.QLabel("상태")
@@ -482,17 +573,28 @@ class App(QtWidgets.QWidget):
         status_title.setFixedWidth(100)
         status_row.addWidget(status_title)
 
+        status_content = QtWidgets.QHBoxLayout()
+        status_content.setContentsMargins(0, 0, 0, 0)
+        status_content.setSpacing(8)
+
+        self.status_dot = QtWidgets.QFrame()
+        self.status_dot.setObjectName("statusDot")
+        self.status_dot.setFixedSize(8, 8)
+        status_content.addWidget(self.status_dot, 0, QtCore.Qt.AlignVCenter)
+
         self.status_label = QtWidgets.QLabel()
         self.status_label.setObjectName("statusValue")
         self.status_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-        status_row.addWidget(self.status_label)
+        status_content.addWidget(self.status_label, 0, QtCore.Qt.AlignVCenter)
+        status_content.addStretch(1)
+        status_row.addLayout(status_content, 1)
         status_row.addStretch(1)
         main_layout.addLayout(status_row)
 
-        main_layout.addSpacing(20)
+        main_layout.addSpacing(28)
 
         settings_layout = QtWidgets.QHBoxLayout()
-        settings_layout.setContentsMargins(0, 0, 0, 0)
+        settings_layout.setContentsMargins(8, 0, 0, 0)
         settings_layout.setSpacing(16)
 
         dpi_label = QtWidgets.QLabel("DPI 설정")
@@ -505,7 +607,7 @@ class App(QtWidgets.QWidget):
         dpi_row.setSpacing(18)
 
         for dpi in DPI_OPTIONS:
-            label_text = "96 DPI (RC)" if dpi == 96 else "192 DPI (RV)"
+            label_text = "96 DPI" if dpi == 96 else "192 DPI"
             radio = QtWidgets.QRadioButton(label_text)
             radio.setChecked(dpi == self.selected_dpi)
             radio.toggled.connect(
@@ -517,21 +619,46 @@ class App(QtWidgets.QWidget):
         settings_layout.addStretch(1)
         main_layout.addLayout(settings_layout)
 
-        main_layout.addSpacing(20)
+        main_layout.addSpacing(28)
 
         content_row = QtWidgets.QHBoxLayout()
         content_row.setContentsMargins(0, 0, 0, 0)
-        content_row.setSpacing(18)
+        content_row.setSpacing(8)
 
         left_col = QtWidgets.QVBoxLayout()
         left_col.setContentsMargins(0, 0, 0, 0)
-        left_col.setSpacing(8)
+        left_col.setSpacing(0)
+
+        history_header_widget = QtWidgets.QWidget()
+        history_header_widget.setFixedHeight(20)
+        history_header = QtWidgets.QHBoxLayout(history_header_widget)
+        history_header.setContentsMargins(8, 0, 8, 0)
+        history_header.setSpacing(6)
 
         history_title = QtWidgets.QLabel("변환내역")
         history_title.setObjectName("panelTitle")
-        left_col.addWidget(history_title)
+        history_header.addWidget(history_title, 0, QtCore.Qt.AlignVCenter)
+
+        self.history_count_label = QtWidgets.QLabel()
+        self.history_count_label.setStyleSheet("color: #9D9D9D;")
+        self.history_count_label.hide()
+        history_header.addWidget(self.history_count_label, 0, QtCore.Qt.AlignVCenter)
+
+        self.folder_button = QtWidgets.QToolButton()
+        self.folder_button.setObjectName("folderIconButton")
+        self.folder_button.setToolTip("결과 폴더 열기")
+        self.folder_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self.folder_button.setAutoRaise(True)
+        self.folder_button.setFixedSize(20, 20)
+        self.folder_button.setIcon(self._load_folder_icon())
+        self.folder_button.setIconSize(QtCore.QSize(18, 18))
+        self.folder_button.clicked.connect(self.open_output_dir)
+        history_header.addWidget(self.folder_button, 0, QtCore.Qt.AlignVCenter)
+        left_col.addWidget(history_header_widget, 0)
+        left_col.addSpacing(8)
 
         log_card = self._build_card()
+        log_card.setFixedHeight(220)
         log_layout = QtWidgets.QVBoxLayout(log_card)
         log_layout.setContentsMargins(8, 8, 8, 8)
         log_layout.setSpacing(0)
@@ -543,18 +670,29 @@ class App(QtWidgets.QWidget):
         self.log_list.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         self.log_list.itemSelectionChanged.connect(self.handle_log_selection)
         log_layout.addWidget(self.log_list)
-        left_col.addWidget(log_card, 1)
+        left_col.addWidget(log_card, 0)
+        left_col.addStretch(1)
         content_row.addLayout(left_col, 1)
 
         right_col = QtWidgets.QVBoxLayout()
         right_col.setContentsMargins(0, 0, 0, 0)
-        right_col.setSpacing(8)
+        right_col.setSpacing(0)
+
+        info_header_widget = QtWidgets.QWidget()
+        info_header_widget.setFixedHeight(20)
+        info_header = QtWidgets.QHBoxLayout(info_header_widget)
+        info_header.setContentsMargins(8, 0, 8, 0)
+        info_header.setSpacing(0)
 
         info_title = QtWidgets.QLabel("파일 정보")
         info_title.setObjectName("panelTitle")
-        right_col.addWidget(info_title)
+        info_header.addWidget(info_title, 0, QtCore.Qt.AlignVCenter)
+        info_header.addStretch(1)
+        right_col.addWidget(info_header_widget, 0)
+        right_col.addSpacing(8)
 
         info_card = self._build_card()
+        info_card.setFixedHeight(220)
         info_layout = QtWidgets.QGridLayout(info_card)
         info_layout.setContentsMargins(12, 12, 12, 12)
         info_layout.setHorizontalSpacing(12)
@@ -562,6 +700,7 @@ class App(QtWidgets.QWidget):
 
         fields = [
             "파일명",
+            "파일 크기",
             "이미지 크기",
             "DPI",
             "색상 모드",
@@ -581,35 +720,62 @@ class App(QtWidgets.QWidget):
             info_layout.addWidget(value_label, row, 1)
             self.info_labels[field] = value_label
         info_layout.setColumnStretch(1, 1)
-        right_col.addWidget(info_card, 1)
+        right_col.addWidget(info_card, 0)
+        right_col.addStretch(1)
         content_row.addLayout(right_col, 1)
 
         main_layout.addLayout(content_row, 1)
-
-        main_layout.addSpacing(22)
-
-        self.folder_button = QtWidgets.QPushButton("폴더열기")
-        self.folder_button.setObjectName("primaryButton")
-        self.folder_button.setFixedHeight(40)
-        self.folder_button.clicked.connect(self.open_base_dir)
-        main_layout.addWidget(self.folder_button)
 
     def _build_hero_icon(self) -> QtWidgets.QFrame:
         frame = QtWidgets.QFrame()
         frame.setFixedSize(52, 52)
         frame.setStyleSheet(
-            "QFrame { background: #ffffff; border: 1px solid #efeff4; border-radius: 8px; }"
+            "QFrame { background: #ffffff; border: 1px solid #efeff4; border-radius: 12px; }"
         )
 
         layout = QtWidgets.QVBoxLayout(frame)
-        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         label = QtWidgets.QLabel()
         label.setAlignment(QtCore.Qt.AlignCenter)
-        label.setPixmap(self._create_logo_pixmap(34))
+        label.setPixmap(self._load_logo_pixmap(52))
         layout.addWidget(label)
         return frame
+
+    @staticmethod
+    def _load_folder_icon() -> QtGui.QIcon:
+        for filename in FOLDER_ICON_FILENAMES:
+            icon_path = resource_path(filename)
+            if icon_path.exists():
+                icon = QtGui.QIcon(str(icon_path))
+                if not icon.isNull():
+                    return icon
+        return QtWidgets.QApplication.style().standardIcon(QtWidgets.QStyle.SP_DirIcon)
+
+    @staticmethod
+    def _load_logo_pixmap(size: int) -> QtGui.QPixmap:
+        icon_path = resource_path(APP_ICON_FILENAME)
+        if icon_path.exists():
+            pixmap = QtGui.QPixmap(str(icon_path))
+            if not pixmap.isNull():
+                scaled = pixmap.scaled(
+                    size,
+                    size,
+                    QtCore.Qt.IgnoreAspectRatio,
+                    QtCore.Qt.SmoothTransformation,
+                )
+                rounded = QtGui.QPixmap(size, size)
+                rounded.fill(QtCore.Qt.transparent)
+                painter = QtGui.QPainter(rounded)
+                painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+                clip_path = QtGui.QPainterPath()
+                clip_path.addRoundedRect(0, 0, size, size, 12, 12)
+                painter.setClipPath(clip_path)
+                painter.drawPixmap(0, 0, scaled)
+                painter.end()
+                return rounded
+        return App._create_logo_pixmap(size)
 
     @staticmethod
     def _create_logo_pixmap(size: int) -> QtGui.QPixmap:
@@ -619,39 +785,48 @@ class App(QtWidgets.QWidget):
         painter = QtGui.QPainter(pixmap)
         painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
 
-        path = QtGui.QPainterPath()
-        c = size / 2
-        outer = size * 0.42
-        inner = size * 0.17
-        points = [
-            QtCore.QPointF(c, c - outer),
-            QtCore.QPointF(c + inner, c - inner),
-            QtCore.QPointF(c + outer, c),
-            QtCore.QPointF(c + inner, c + inner),
-            QtCore.QPointF(c, c + outer),
-            QtCore.QPointF(c - inner, c + inner),
-            QtCore.QPointF(c - outer, c),
-            QtCore.QPointF(c - inner, c - inner),
-        ]
-        path.moveTo(points[0])
-        for point in points[1:]:
-            path.lineTo(point)
-        path.closeSubpath()
+        shadow_path = QtGui.QPainterPath()
+        shadow_path.moveTo(size * 0.18, size * 0.33)
+        shadow_path.lineTo(size * 0.44, size * 0.08)
+        shadow_path.lineTo(size * 0.83, size * 0.44)
+        shadow_path.lineTo(size * 0.54, size * 0.82)
+        shadow_path.lineTo(size * 0.14, size * 0.46)
+        shadow_path.closeSubpath()
+        painter.fillPath(shadow_path.translated(0, size * 0.03), QtGui.QColor(0, 0, 0, 24))
 
-        gradient = QtGui.QLinearGradient(0, 0, size, size)
-        gradient.setColorAt(0.0, QtGui.QColor("#55a1ff"))
-        gradient.setColorAt(0.45, QtGui.QColor("#1d74e8"))
-        gradient.setColorAt(1.0, QtGui.QColor("#0f58cc"))
+        main_path = QtGui.QPainterPath()
+        main_path.moveTo(size * 0.16, size * 0.34)
+        main_path.lineTo(size * 0.44, size * 0.10)
+        main_path.lineTo(size * 0.84, size * 0.44)
+        main_path.lineTo(size * 0.56, size * 0.80)
+        main_path.lineTo(size * 0.14, size * 0.47)
+        main_path.closeSubpath()
+
+        gradient = QtGui.QLinearGradient(size * 0.15, size * 0.1, size * 0.84, size * 0.8)
+        gradient.setColorAt(0.0, QtGui.QColor("#6fb6ff"))
+        gradient.setColorAt(0.35, QtGui.QColor("#2b82ee"))
+        gradient.setColorAt(1.0, QtGui.QColor("#1a62d8"))
         painter.setBrush(QtGui.QBrush(gradient))
-        painter.setPen(QtGui.QPen(QtGui.QColor("#2d78df"), 3))
-        painter.drawPath(path)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#2c78dd"), 1.8))
+        painter.drawPath(main_path)
 
-        highlight = QtGui.QPainterPath()
-        highlight.moveTo(c - inner * 1.2, c - inner * 1.5)
-        highlight.lineTo(c, c - outer * 0.72)
-        highlight.lineTo(c + inner * 1.65, c - inner * 0.2)
-        painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 120), 4))
-        painter.drawPath(highlight)
+        facet = QtGui.QPainterPath()
+        facet.moveTo(size * 0.38, size * 0.18)
+        facet.lineTo(size * 0.50, size * 0.08)
+        facet.lineTo(size * 0.74, size * 0.28)
+        facet.lineTo(size * 0.63, size * 0.39)
+        facet.closeSubpath()
+        facet_gradient = QtGui.QLinearGradient(size * 0.38, size * 0.08, size * 0.74, size * 0.39)
+        facet_gradient.setColorAt(0.0, QtGui.QColor(255, 255, 255, 180))
+        facet_gradient.setColorAt(1.0, QtGui.QColor(255, 255, 255, 60))
+        painter.fillPath(facet, facet_gradient)
+
+        inner_line = QtGui.QPainterPath()
+        inner_line.moveTo(size * 0.26, size * 0.26)
+        inner_line.lineTo(size * 0.43, size * 0.14)
+        inner_line.lineTo(size * 0.67, size * 0.36)
+        painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 130), 2.2, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin))
+        painter.drawPath(inner_line)
 
         painter.end()
         return pixmap
@@ -695,6 +870,9 @@ class App(QtWidgets.QWidget):
     def open_base_dir(self) -> None:
         self.open_folder(DEFAULT_BASE_DIR)
 
+    def open_output_dir(self) -> None:
+        self.open_folder(self.output_dir)
+
     def refresh_paths(self) -> None:
         if not save_config(self.input_dir, self.output_dir, self.selected_dpi):
             self.append_log_entry("설정 저장 실패")
@@ -710,12 +888,35 @@ class App(QtWidgets.QWidget):
             return
 
         timestamp = time.strftime("%H:%M:%S")
-        item = QtWidgets.QListWidgetItem(f"[{timestamp}] {message}")
+        item_text = f"[{timestamp}] {message}"
+        item: QtWidgets.QListWidgetItem | None = None
+        file_key: str | None = None
+
         if file_path:
-            item.setData(QtCore.Qt.UserRole, str(file_path))
-        self.log_list.insertItem(0, item)
+            file_key = str(file_path)
+            item = self.log_items_by_file.get(file_key)
+
+        if item is None:
+            item = QtWidgets.QListWidgetItem(item_text)
+            if file_key:
+                item.setData(QtCore.Qt.UserRole, file_key)
+                self.log_items_by_file[file_key] = item
+            self.log_list.insertItem(0, item)
+        else:
+            item.setText(item_text)
+            row = self.log_list.row(item)
+            if row >= 0:
+                self.log_list.takeItem(row)
+            self.log_list.insertItem(0, item)
+
         while self.log_list.count() > 200:
-            self.log_list.takeItem(self.log_list.count() - 1)
+            removed_item = self.log_list.takeItem(self.log_list.count() - 1)
+            if removed_item is not None:
+                removed_key = removed_item.data(QtCore.Qt.UserRole)
+                if removed_key and self.log_items_by_file.get(removed_key) is removed_item:
+                    self.log_items_by_file.pop(removed_key, None)
+        self.update_history_count()
+        self.flush_ui()
 
     def handle_log_selection(self) -> None:
         if not self.log_list or not self.log_list.selectedItems():
@@ -723,6 +924,34 @@ class App(QtWidgets.QWidget):
         path_text = self.log_list.selectedItems()[0].data(QtCore.Qt.UserRole)
         if path_text:
             self.show_file_info(Path(path_text))
+
+    @staticmethod
+    def flush_ui() -> None:
+        app = QtWidgets.QApplication.instance()
+        if app:
+            app.processEvents()
+
+    def update_history_count(self) -> None:
+        if not self.history_count_label or not self.log_list:
+            return
+
+        unique_files: set[str] = set()
+        for index in range(self.log_list.count()):
+            item = self.log_list.item(index)
+            if not item:
+                continue
+            file_key = item.data(QtCore.Qt.UserRole)
+            if file_key:
+                unique_files.add(str(file_key))
+
+        count = len(unique_files)
+        if count <= 0:
+            self.history_count_label.hide()
+            self.history_count_label.clear()
+            return
+
+        self.history_count_label.setText(f"{count}건")
+        self.history_count_label.show()
 
     def set_info_value(self, key: str, value: str) -> None:
         label = self.info_labels.get(key)
@@ -737,6 +966,7 @@ class App(QtWidgets.QWidget):
     def read_png_info(self, file_path: Path) -> dict[str, str]:
         default_info = {
             "파일명": file_path.name,
+            "파일 크기": "-",
             "이미지 크기": "-",
             "DPI": "-",
             "색상 모드": "RGB",
@@ -800,6 +1030,7 @@ class App(QtWidgets.QWidget):
 
         return {
             "파일명": file_path.name,
+            "파일 크기": format_file_size(len(raw)),
             "이미지 크기": f"{width} x {height} (pixel)",
             "DPI": dpi_text,
             "색상 모드": "RGB",
@@ -831,27 +1062,32 @@ class App(QtWidgets.QWidget):
         self.setWindowTitle(f"{APP_NAME} - {message}")
 
         if message == "대기 중":
-            text = "● 대기중"
-            style = "color: #23914a;"
+            text = "대기중"
+            color = "#23914a"
         elif "자동 변환 활성화" in message:
-            text = "● 자동 변환 활성화"
-            style = "color: #23914a;"
+            text = "활성화"
+            color = "#23914a"
         elif "변환 중" in message:
-            text = f"● {message}"
-            style = "color: #b86a00;"
+            text = message
+            color = "#b86a00"
         elif "실패" in message:
-            text = "● 변환 실패"
-            style = "color: #c62828;"
+            text = "변환 실패"
+            color = "#c62828"
         elif "완료" in message:
-            text = f"● {message}"
-            style = "color: #188038;"
+            text = message
+            color = "#188038"
         else:
-            text = f"● {message}"
-            style = "color: #111111;"
+            text = message
+            color = "#111111"
 
         if self.status_label:
             self.status_label.setText(text)
-            self.status_label.setStyleSheet(style)
+            self.status_label.setStyleSheet(f"color: {color};")
+        if self.status_dot:
+            radius = self.status_dot.width() // 2
+            self.status_dot.setStyleSheet(
+                f"background: {color}; border: none; border-radius: {radius}px;"
+            )
 
     def show_dependency_warning(self) -> None:
         install_text = (
@@ -903,10 +1139,16 @@ class App(QtWidgets.QWidget):
             timer.stop()
             timer.deleteLater()
         self.debounce_jobs.clear()
+        self.pending_convert_paths.clear()
+        self.pending_convert_keys.clear()
+        self.processing_convert_queue = False
+        self.last_processed_svg_mtimes.clear()
+        self.watch_started_at = time.time()
+        self.rescan_timer.stop()
 
         self.observer = Observer()
         handler = SvgEventHandler(self.enqueue_event)
-        self.observer.schedule(handler, str(self.input_dir), recursive=False)
+        self.observer.schedule(handler, str(self.input_dir), recursive=True)
         self.observer.start()
         self.set_status("자동 변환 활성화")
 
@@ -919,6 +1161,11 @@ class App(QtWidgets.QWidget):
         self.observer = None
         observer.stop()
         observer.join(timeout=3)
+        self.pending_convert_paths.clear()
+        self.pending_convert_keys.clear()
+        self.processing_convert_queue = False
+        self.last_processed_svg_mtimes.clear()
+        self.rescan_timer.stop()
         self.set_status("대기 중")
 
     def enqueue_event(self, path: Path) -> None:
@@ -926,15 +1173,53 @@ class App(QtWidgets.QWidget):
             self.event_queue.put(path)
 
     def poll_events(self) -> None:
+        saw_events = False
         while True:
             try:
                 path = self.event_queue.get_nowait()
             except queue.Empty:
                 break
+            saw_events = True
             self.schedule_debounced_convert(path)
+        if saw_events:
+            self.rescan_timer.start(1200)
+
+    def reconcile_recent_svgs(self) -> None:
+        if not self.input_dir.exists():
+            return
+
+        threshold = self.watch_started_at - 0.5 if self.watch_started_at else 0.0
+        for path in self.input_dir.rglob("*"):
+            if not path.is_file() or not is_svg_file(path):
+                continue
+
+            try:
+                svg_mtime = path.stat().st_mtime
+            except OSError:
+                continue
+
+            if svg_mtime < threshold:
+                continue
+
+            output_path = self.output_dir / f"{path.stem}.png"
+            try:
+                output_mtime = output_path.stat().st_mtime if output_path.exists() else 0.0
+            except OSError:
+                output_mtime = 0.0
+
+            if not output_path.exists() or output_mtime < svg_mtime:
+                self.schedule_debounced_convert(path)
 
     def schedule_debounced_convert(self, path: Path) -> None:
         path_key = str(path)
+        try:
+            current_mtime = path.stat().st_mtime
+        except OSError:
+            return
+
+        if self.last_processed_svg_mtimes.get(path_key) == current_mtime:
+            return
+
         existing_timer = self.debounce_jobs.pop(path_key, None)
         if existing_timer:
             existing_timer.stop()
@@ -948,7 +1233,52 @@ class App(QtWidgets.QWidget):
 
     def _run_debounced_convert(self, path: Path) -> None:
         self.debounce_jobs.pop(str(path), None)
-        self.convert_svg(path)
+        self.enqueue_conversion_request(path)
+
+    def enqueue_conversion_request(self, path: Path) -> None:
+        path_key = str(path)
+        if path_key in self.pending_convert_keys:
+            return
+
+        self.pending_convert_paths.append(path)
+        self.pending_convert_keys.add(path_key)
+
+        if not self.processing_convert_queue:
+            QtCore.QTimer.singleShot(0, self.process_next_conversion)
+
+    def process_next_conversion(self) -> None:
+        if self.processing_convert_queue:
+            return
+        if not self.pending_convert_paths:
+            return
+
+        path = self.pending_convert_paths.pop(0)
+        self.pending_convert_keys.discard(str(path))
+        self.processing_convert_queue = True
+        try:
+            self.convert_svg(path)
+        finally:
+            self.processing_convert_queue = False
+            if self.pending_convert_paths:
+                QtCore.QTimer.singleShot(0, self.process_next_conversion)
+
+    def bring_to_front_if_needed(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        is_minimized = bool(self.windowState() & QtCore.Qt.WindowMinimized)
+        if not is_minimized and self.isActiveWindow():
+            return
+
+        if is_minimized:
+            self.setWindowState(self.windowState() & ~QtCore.Qt.WindowMinimized)
+            self.showNormal()
+        elif not self.isVisible():
+            self.show()
+
+        self.raise_()
+        self.activateWindow()
+        if app:
+            app.setActiveWindow(self)
+            app.processEvents()
 
     def convert_svg(self, svg_path: Path, show_message: bool = False) -> bool:
         if not svg_path.exists():
@@ -963,13 +1293,18 @@ class App(QtWidgets.QWidget):
             return False
 
         try:
+            self.bring_to_front_if_needed()
+            current_mtime = svg_path.stat().st_mtime
             ensure_directory(self.output_dir)
             output_path = self.output_dir / f"{svg_path.stem}.png"
             self.set_status(f"변환 중: {svg_path.name}")
+            self.flush_ui()
             self.run_pipeline(svg_path, output_path)
+            self.last_processed_svg_mtimes[str(svg_path)] = current_mtime
             self.set_status(f"완료: {output_path.name}")
             self.append_log_entry(f"변환 완료 {svg_path.name}", output_path)
             self.show_file_info(output_path)
+            self.flush_ui()
             if show_message:
                 QtWidgets.QMessageBox.information(
                     self,
@@ -980,6 +1315,7 @@ class App(QtWidgets.QWidget):
         except Exception as exc:  # noqa: BLE001
             self.set_status("변환 실패")
             self.append_log_entry(f"변환 실패 {svg_path.name}")
+            self.flush_ui()
             QtWidgets.QMessageBox.critical(
                 self,
                 APP_NAME,
