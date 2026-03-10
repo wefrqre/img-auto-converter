@@ -6,3 +6,6 @@ dist/
 release/
 __pycache__/
 *.pyc
+.DS_Store
+bundle_bin/vendor/
+bundle_bin/.DS_Store

@@ -12,3 +12,8 @@ At runtime, the app checks:
 3. Standard system locations and PATH
 
 This directory is included in the PyInstaller build via app.spec.
+
+build_app.sh behavior:
+- By default (`BUNDLE_INKSCAPE=1`), the script copies local Inkscape.app
+  into `bundle_bin/vendor/Inkscape.app` before building.
+- Set `BUNDLE_INKSCAPE=0` to skip auto-bundling.

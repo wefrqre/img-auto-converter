@@ -9,6 +9,9 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -91,7 +94,10 @@ except ModuleNotFoundError:
 
 
 APP_NAME = "응용 이미지 자동 변환기"
+APP_VERSION = "1.0.0"
 CONFIG_PATH = Path.home() / ".applied_image_auto_converter.json"
+UPDATE_URL_CONFIG_PATH = Path.home() / ".applied_image_auto_converter_update_url.txt"
+UPDATE_URL_BUNDLED_FILENAME = "update_url.txt"
 APP_ICON_FILENAME = "app_icon.png"
 HERO_ICON_BOX_SIZE = 42
 HERO_ICON_WIDTH = 35
@@ -106,6 +112,8 @@ DEFAULT_DPI = 96
 DPI_OPTIONS = (96, 192)
 PATH_HINTS = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
 WATCH_EXTENSIONS = {".svg"}
+UPDATE_INFO_URL = os.environ.get("APP_UPDATE_INFO_URL", "").strip()
+UPDATE_REQUEST_TIMEOUT_SECONDS = 3
 DIRECT_TOOL_PATHS = {
     "inkscape": [
         Path("/Applications/Inkscape.app/Contents/MacOS/inkscape"),
@@ -168,6 +176,9 @@ def configure_runtime_path() -> str:
 
 def get_resource_root() -> Path:
     if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            return Path(meipass)
         executable_path = Path(sys.executable).resolve()
         return executable_path.parents[1] / "Resources"
     return Path(__file__).resolve().parent
@@ -213,6 +224,28 @@ def detect_tools() -> ToolPaths:
     )
 
 
+def first_non_empty_line(text: str) -> str:
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#"):
+            return line
+    return ""
+
+
+def read_update_url_from_file(path: Path) -> str:
+    if not path.exists():
+        return ""
+    try:
+        return first_non_empty_line(path.read_text(encoding="utf-8"))
+    except OSError:
+        return ""
+
+
+def is_supported_update_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    return parsed.scheme in {"http", "https", "file"}
+
+
 def load_config() -> dict[str, object]:
     if not CONFIG_PATH.exists():
         return {}
@@ -224,11 +257,15 @@ def load_config() -> dict[str, object]:
 
 
 def save_config(input_dir: Path, output_dir: Path, dpi: int) -> bool:
-    payload = {
-        "input_dir": str(input_dir),
-        "output_dir": str(output_dir),
-        "dpi": dpi,
-    }
+    existing = load_config()
+    payload: dict[str, object] = dict(existing) if isinstance(existing, dict) else {}
+    payload.update(
+        {
+            "input_dir": str(input_dir),
+            "output_dir": str(output_dir),
+            "dpi": dpi,
+        }
+    )
     try:
         CONFIG_PATH.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
@@ -237,6 +274,26 @@ def save_config(input_dir: Path, output_dir: Path, dpi: int) -> bool:
         return True
     except OSError:
         return False
+
+
+def resolve_update_info_url(config: dict[str, object]) -> str:
+    env_url = UPDATE_INFO_URL.strip()
+    if env_url and is_supported_update_url(env_url):
+        return env_url
+
+    config_url = str(config.get("update_info_url", "")).strip()
+    if config_url and is_supported_update_url(config_url):
+        return config_url
+
+    user_file_url = read_update_url_from_file(UPDATE_URL_CONFIG_PATH)
+    if user_file_url and is_supported_update_url(user_file_url):
+        return user_file_url
+
+    bundled_url = read_update_url_from_file(resource_path(UPDATE_URL_BUNDLED_FILENAME))
+    if bundled_url and is_supported_update_url(bundled_url):
+        return bundled_url
+
+    return ""
 
 
 def ensure_directory(path: Path) -> bool:
@@ -260,6 +317,29 @@ def normalize_dpi(value: object) -> int:
 def output_dir_for_dpi(dpi: int) -> Path:
     safe_dpi = normalize_dpi(dpi)
     return DEFAULT_BASE_DIR / f"png_{safe_dpi}dpi"
+
+
+def parse_version_parts(version: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for chunk in version.strip().split("."):
+        digits = "".join(ch for ch in chunk if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    while parts and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts or [0])
+
+
+def compare_versions(left: str, right: str) -> int:
+    left_parts = list(parse_version_parts(left))
+    right_parts = list(parse_version_parts(right))
+    max_len = max(len(left_parts), len(right_parts))
+    left_parts.extend([0] * (max_len - len(left_parts)))
+    right_parts.extend([0] * (max_len - len(right_parts)))
+    if left_parts > right_parts:
+        return 1
+    if left_parts < right_parts:
+        return -1
+    return 0
 
 
 def format_file_size(size_bytes: int) -> str:
@@ -501,6 +581,8 @@ class InfoTooltip(QtWidgets.QWidget):
 
 
 class App(QtWidgets.QWidget):
+    update_available = QtCore.Signal(str, str, str)
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(APP_NAME)
@@ -554,11 +636,15 @@ class App(QtWidgets.QWidget):
         self.bottom_collapsed = False
         self.expanded_window_height = 440
         self.startup_warning: str | None = None
+        self.version_label: QtWidgets.QLabel | None = None
+        self.update_info_url = resolve_update_info_url(config)
+        self.notified_update_versions: set[str] = set()
 
         self.first_launch_setup()
         self.build_ui()
         self.set_status("변환 중지됨")
         self.refresh_paths()
+        self.update_available.connect(self.show_update_dialog)
 
         if self.startup_warning:
             warning_text = self.startup_warning
@@ -579,6 +665,8 @@ class App(QtWidgets.QWidget):
             self.show_dependency_warning()
         else:
             QtCore.QTimer.singleShot(200, self.start_watch)
+        if self.update_info_url:
+            QtCore.QTimer.singleShot(900, self.check_for_updates_async)
 
     def first_launch_setup(self) -> None:
         created: list[Path] = []
@@ -593,16 +681,9 @@ class App(QtWidgets.QWidget):
         config_saved = save_config(self.input_dir, self.output_dir, self.selected_dpi)
 
         if created:
-            created_text = "\n".join(str(path) for path in created)
             QtCore.QTimer.singleShot(
                 200,
-                lambda: QtWidgets.QMessageBox.information(
-                    self,
-                    APP_NAME,
-                    "초기 폴더를 만들었습니다.\n\n"
-                    f"{created_text}\n\n"
-                    "앞으로 SVG는 입력 폴더에 넣으면 자동 변환됩니다.",
-                ),
+                self.show_initial_folder_ready_dialog,
             )
 
         if failed or not config_saved:
@@ -614,6 +695,22 @@ class App(QtWidgets.QWidget):
                 parts.append(f"설정 파일을 저장하지 못했습니다.\n{CONFIG_PATH}")
             parts.append("macOS 권한 설정을 확인한 뒤 다시 시도하세요.")
             self.startup_warning = "\n\n".join(parts)
+
+    def show_initial_folder_ready_dialog(self) -> None:
+        dialog = QtWidgets.QMessageBox(self)
+        dialog.setIcon(QtWidgets.QMessageBox.Information)
+        dialog.setWindowTitle("작업 폴더가 준비됐어요")
+        dialog.setText(
+            "SVG 파일을 svg 폴더에 저장하면\n"
+            "PNG가 자동으로 생성됩니다.\n\n"
+            "폴더 위치 : Desktop > figma_exports"
+        )
+        confirm_button = dialog.addButton("확인", QtWidgets.QMessageBox.AcceptRole)
+        open_button = dialog.addButton("폴더 열기", QtWidgets.QMessageBox.ActionRole)
+        confirm_button.setDefault(True)
+        dialog.exec()
+        if dialog.clickedButton() == open_button:
+            self.open_base_dir()
 
     def dependency_summary(self) -> str:
         if self.tool_paths.inkscape:
@@ -743,6 +840,12 @@ class App(QtWidgets.QWidget):
             QLabel#infoValue {
                 color: #111111;
                 font-size: 11px;
+            }
+            QLabel#appVersion {
+                color: #9E9E9E;
+                font-size: 10px;
+                font-weight: 400;
+                background: transparent;
             }
             """
         )
@@ -878,11 +981,12 @@ class App(QtWidgets.QWidget):
         history_header = QtWidgets.QHBoxLayout(history_header_widget)
         history_header.setContentsMargins(0, 0, 0, 0)
         history_header.setSpacing(0)
+        history_header.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
         history_title = QtWidgets.QLabel("변환 내역")
         history_title.setObjectName("panelTitle")
         history_title.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-        history_header.addWidget(history_title, 0, QtCore.Qt.AlignVCenter)
+        history_header.addWidget(history_title, 0, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         history_header.addSpacing(4)
 
         self.history_count_label = QtWidgets.QLabel()
@@ -894,7 +998,9 @@ class App(QtWidgets.QWidget):
         )
         self.history_count_label.setContentsMargins(0, 0, 0, 0)
         self.history_count_label.hide()
-        history_header.addWidget(self.history_count_label, 0, QtCore.Qt.AlignVCenter)
+        history_header.addWidget(
+            self.history_count_label, 0, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter
+        )
         history_header.addStretch(1)
         left_col.addWidget(history_header_widget, 0)
         left_col.addSpacing(4)
@@ -1025,12 +1131,74 @@ class App(QtWidgets.QWidget):
         self.bottom_layout.addWidget(self.bottom_content_widget, 1)
         main_layout.addWidget(self.bottom_card, 1)
 
+        self.version_label = QtWidgets.QLabel(f"v{APP_VERSION}", self)
+        self.version_label.setObjectName("appVersion")
+        self.version_label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self.version_label.adjustSize()
+        self.position_version_label()
+
         self.status_animation_timer = QtCore.QTimer(self)
         self.status_animation_timer.setInterval(420)
         self.status_animation_timer.timeout.connect(self._tick_status_animation)
         self.update_dpi_display()
         self.update_history_count()
         self.set_bottom_collapsed(True)
+
+    def position_version_label(self) -> None:
+        if not self.version_label:
+            return
+        self.version_label.adjustSize()
+        right_margin = 14
+        bottom_margin = 10
+        x = self.width() - right_margin - self.version_label.width()
+        y = self.height() - bottom_margin - self.version_label.height()
+        self.version_label.move(max(0, x), max(0, y))
+        self.version_label.raise_()
+
+    def check_for_updates_async(self) -> None:
+        if not self.update_info_url:
+            return
+        threading.Thread(target=self._check_for_updates_worker, daemon=True).start()
+
+    def _check_for_updates_worker(self) -> None:
+        if not self.update_info_url:
+            return
+        try:
+            request = urllib.request.Request(
+                self.update_info_url,
+                headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+            )
+            with urllib.request.urlopen(request, timeout=UPDATE_REQUEST_TIMEOUT_SECONDS) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+            return
+
+        latest_version = str(payload.get("version", "")).strip()
+        download_url = str(payload.get("download_url", "")).strip()
+        notes = str(payload.get("notes", "")).strip()
+        if not latest_version or not download_url:
+            return
+        if compare_versions(latest_version, APP_VERSION) <= 0:
+            return
+        self.update_available.emit(latest_version, download_url, notes)
+
+    def show_update_dialog(self, latest_version: str, download_url: str, notes: str) -> None:
+        if latest_version in self.notified_update_versions:
+            return
+        self.notified_update_versions.add(latest_version)
+
+        dialog = QtWidgets.QMessageBox(self)
+        dialog.setIcon(QtWidgets.QMessageBox.Information)
+        dialog.setWindowTitle(APP_NAME)
+        message = f"새 버전 {latest_version}이 있습니다.\n현재 버전 {APP_VERSION}"
+        if notes:
+            message = f"{message}\n\n{notes}"
+        dialog.setText(message)
+        download_button = dialog.addButton("다운로드", QtWidgets.QMessageBox.AcceptRole)
+        dialog.addButton("나중에", QtWidgets.QMessageBox.RejectRole)
+        dialog.exec()
+        if dialog.clickedButton() == download_button:
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl(download_url))
 
     def show_dpi_menu(self) -> None:
         if not self.dpi_button:
@@ -1120,6 +1288,7 @@ class App(QtWidgets.QWidget):
                 collapsed_height = max(layout.sizeHint().height(), self.minimumSizeHint().height())
                 self.setMinimumHeight(collapsed_height)
                 self.resize(self.width(), collapsed_height)
+            self.position_version_label()
             return
 
         if self.bottom_content_widget:
@@ -1143,6 +1312,7 @@ class App(QtWidgets.QWidget):
             )
             self.setMinimumHeight(expanded_height)
             self.resize(self.width(), expanded_height)
+        self.position_version_label()
 
     def toggle_watch(self) -> None:
         if self.observer:
@@ -1846,10 +2016,15 @@ class App(QtWidgets.QWidget):
             self.stop_watch()
         event.accept()
 
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.position_version_label()
+
 
 def main() -> None:
     application = QtWidgets.QApplication(sys.argv)
     application.setApplicationName(APP_NAME)
+    application.setApplicationVersion(APP_VERSION)
     window = App()
     window.show()
     sys.exit(application.exec())

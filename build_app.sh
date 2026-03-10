@@ -23,8 +23,17 @@ if ! "$BUILD_PYTHON" -c "import PyInstaller, PySide6" >/dev/null 2>&1; then
   BUILD_PYTHON="$PROJECT_DIR/.build-venv/bin/python3"
 fi
 
+APP_VERSION="$("$BUILD_PYTHON" - <<'PY'
+import re
+from pathlib import Path
+
+text = Path("app.py").read_text(encoding="utf-8")
+match = re.search(r'^APP_VERSION\s*=\s*"([^"]+)"', text, re.MULTILINE)
+print(match.group(1) if match else "0.0.0")
+PY
+)"
+
 mkdir -p "$BUNDLE_BIN_DIR"
-rm -rf "$BUNDLE_BIN_DIR/vendor"
 mkdir -p "$BUNDLE_BIN_DIR/vendor"
 
 INKSCAPE_SOURCE_BIN=""
@@ -39,8 +48,16 @@ fi
 
 if [[ -n "$INKSCAPE_SOURCE_BIN" && -x "$INKSCAPE_SOURCE_BIN" ]]; then
   INKSCAPE_APP_DIR="$(cd "$(dirname "$INKSCAPE_SOURCE_BIN")/../.." && pwd)"
+  if [[ "${BUNDLE_INKSCAPE:-1}" == "1" ]]; then
+    echo "Bundling Inkscape.app from: $INKSCAPE_APP_DIR"
+    rm -rf "$BUNDLE_BIN_DIR/vendor/Inkscape.app"
+    ditto "$INKSCAPE_APP_DIR" "$BUNDLE_BIN_DIR/vendor/Inkscape.app"
+  else
+    echo "Skipping Inkscape bundling (BUNDLE_INKSCAPE=${BUNDLE_INKSCAPE:-0})."
+    rm -rf "$BUNDLE_BIN_DIR/vendor/Inkscape.app"
+  fi
 else
-  echo "Warning: Inkscape bundle source was not found. The app will fall back to a system install."
+  echo "Warning: Inkscape.app source was not found. The app will require a system install on target Macs."
 fi
 
 "$BUILD_PYTHON" -m PyInstaller \
@@ -71,7 +88,7 @@ exec "$APP_DIR/응용이미지자동화 변환기"
 EOF
 chmod +x "$APP_LAUNCHER"
 
-cat > "$APP_PLIST" <<'EOF'
+cat > "$APP_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -91,9 +108,9 @@ cat > "$APP_PLIST" <<'EOF'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.0.0</string>
+    <string>$APP_VERSION</string>
     <key>CFBundleVersion</key>
-    <string>0.0.0</string>
+    <string>$APP_VERSION</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>NSHighResolutionCapable</key>

@@ -8,6 +8,7 @@ datas = [
     ("info.svg", "."),
     ("arrow_down.svg", "."),
     ("Vector.svg", "."),
+    ("update_url.txt", "."),
 ]
 
 
