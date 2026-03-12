@@ -4,10 +4,12 @@
 datas = [
     ("README.md", "."),
     ("bundle_bin", "bin"),
-    ("app_icon.png", "."),
     ("info.svg", "."),
-    ("arrow_down.svg", "."),
-    ("Vector.svg", "."),
+    ("arrow-down.svg", "."),
+    ("arrow-up.svg", "."),
+    ("Figma.svg", "."),
+    ("Local.svg", "."),
+    ("loading.svg", "."),
     ("update_url.txt", "."),
 ]
 

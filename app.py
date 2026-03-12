@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import tempfile
@@ -99,12 +100,18 @@ CONFIG_PATH = Path.home() / ".applied_image_auto_converter.json"
 UPDATE_URL_CONFIG_PATH = Path.home() / ".applied_image_auto_converter_update_url.txt"
 UPDATE_URL_BUNDLED_FILENAME = "update_url.txt"
 APP_ICON_FILENAME = "app_icon.png"
-HERO_ICON_BOX_SIZE = 42
-HERO_ICON_WIDTH = 35
-HERO_ICON_HEIGHT = 34
 INFO_ICON_FILENAMES = ("info.svg", "Info.svg")
-ARROW_DOWN_ICON_FILENAMES = ("arrow_down.svg", "Arrow_down.svg")
-FOLDER_ICON_FILENAMES = ("vector.svg", "Vector.svg")
+ARROW_DOWN_ICON_FILENAMES = ("arrow-down.svg", "arrow_down.svg", "Arrow_down.svg")
+ARROW_UP_ICON_FILENAMES = ("arrow-up.svg", "arrow_up.svg", "Arrow_up.svg")
+ARROW_DOWN_SMALL_ICON_FILENAMES = (
+    "arrow_down_small.svg",
+    "arrow-down-small.svg",
+    "arrow_donw_small.svg",
+)
+ARROW_UP_SMALL_ICON_FILENAMES = ("arrow_up_small.svg", "arrow-up-small.svg")
+FIGMA_ICON_FILENAMES = ("Figma.svg", "figma.svg")
+LOCAL_ICON_FILENAMES = ("Local.svg", "local.svg")
+LOADING_ICON_FILENAMES = ("loading.svg", "Loading.svg")
 INFO_TOOLTIP_TEXT = "Figma에서 SVG 파일을 폴더에 저장하면\nPNG로 자동 변환됩니다."
 DEFAULT_BASE_DIR = Path.home() / "Desktop" / "figma_exports"
 DEFAULT_INPUT_DIR = DEFAULT_BASE_DIR / "svg"
@@ -350,6 +357,21 @@ def format_file_size(size_bytes: int) -> str:
     return f"{size_bytes / (1024 * 1024):.2f} MB"
 
 
+def format_display_path(path: Path) -> str:
+    expanded = path.expanduser()
+    home = Path.home()
+    try:
+        relative = expanded.relative_to(home)
+    except ValueError:
+        return str(expanded)
+    parts = [part for part in relative.parts if part and part != "."]
+    if not parts:
+        return "~"
+    if len(parts) >= 2:
+        return "/".join(parts[-2:])
+    return parts[0]
+
+
 def is_svg_file(path: Path) -> bool:
     return path.suffix.lower() in WATCH_EXTENSIONS
 
@@ -381,17 +403,29 @@ class SvgEventHandler(FileSystemEventHandler):
 
 
 class PillButton(QtWidgets.QPushButton):
-    def __init__(self, text: str, outlined: bool, parent: QtWidgets.QWidget | None = None) -> None:
+    def __init__(
+        self,
+        text: str,
+        outlined: bool,
+        tone: str = "neutral",
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
         super().__init__(text, parent)
         self.outlined = outlined
+        self.tone = tone
         self.suffix_icon: QtGui.QPixmap | None = None
         self.suffix_icon_gap = 8
-        self.setFixedHeight(30)
-        self.setMinimumHeight(30)
-        self.setMaximumHeight(30)
+        self.setFixedHeight(38)
+        self.setMinimumHeight(38)
+        self.setMaximumHeight(38)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setFocusPolicy(QtCore.Qt.NoFocus)
         self.setFlat(True)
+
+    def set_tone(self, tone: str) -> None:
+        self.tone = tone
+        self.update()
 
     def set_suffix_icon(self, pixmap: QtGui.QPixmap | None, width: int = 8, gap: int = 8) -> None:
         self.suffix_icon_gap = max(0, int(gap))
@@ -413,6 +447,57 @@ class PillButton(QtWidgets.QPushButton):
         self.suffix_icon = scaled
         self.update()
 
+    def _outlined_palette(self) -> tuple[QtGui.QColor, QtGui.QColor, QtGui.QColor]:
+        if self.isDown():
+            return (
+                QtGui.QColor("#C7D4E0"),
+                QtGui.QColor("#E8F1F8"),
+                QtGui.QColor("#17324A"),
+            )
+        if self.underMouse():
+            return (
+                QtGui.QColor("#C9D9E7"),
+                QtGui.QColor("#F7FBFF"),
+                QtGui.QColor("#102B41"),
+            )
+        return (
+            QtGui.QColor("#D3DDE7"),
+            QtGui.QColor("#FFFFFF"),
+            QtGui.QColor("#17324A"),
+        )
+
+    def _filled_palette(self) -> tuple[QtGui.QColor, QtGui.QColor, QtGui.QColor]:
+        palettes = {
+            "active": {
+                "default": ("#224D72", "#123954", "#F7FBFF"),
+                "hover": ("#285A86", "#16425F", "#F7FBFF"),
+                "down": ("#17384F", "#102B3F", "#F7FBFF"),
+            },
+            "warning": {
+                "default": ("#C86B40", "#A84E29", "#FFF9F5"),
+                "hover": ("#D47B4F", "#B45A31", "#FFF9F5"),
+                "down": ("#B25831", "#904223", "#FFF9F5"),
+            },
+            "primary": {
+                "default": ("#3F89FF", "#225FD6", "#F7FBFF"),
+                "hover": ("#5A9AFF", "#3171E2", "#F7FBFF"),
+                "down": ("#2F6EDD", "#1C54BF", "#F7FBFF"),
+            },
+            "neutral": {
+                "default": ("#94A4B4", "#708295", "#FFFFFF"),
+                "hover": ("#9EADBB", "#7B8C9E", "#FFFFFF"),
+                "down": ("#7B8C9E", "#5E7185", "#FFFFFF"),
+            },
+        }
+        tone_palette = palettes.get(self.tone, palettes["primary"])
+        if self.isDown():
+            start, end, text = tone_palette["down"]
+        elif self.underMouse():
+            start, end, text = tone_palette["hover"]
+        else:
+            start, end, text = tone_palette["default"]
+        return QtGui.QColor(start), QtGui.QColor(end), QtGui.QColor(text)
+
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:  # noqa: N802
         del event
         painter = QtGui.QPainter(self)
@@ -422,30 +507,22 @@ class PillButton(QtWidgets.QPushButton):
         radius = rect.height() / 2.0
 
         if self.outlined:
-            if self.isDown():
-                background = QtGui.QColor("#EFF1F5")
-            elif self.underMouse():
-                background = QtGui.QColor("#F8F9FB")
-            else:
-                background = QtGui.QColor("#FFFFFF")
-            border_color = QtGui.QColor("#E6E7ED")
+            border_color, background, text_color = self._outlined_palette()
             painter.setPen(QtGui.QPen(border_color, 1))
+            painter.setBrush(background)
         else:
-            if self.isDown():
-                background = QtGui.QColor("#E1E3E8")
-            elif self.underMouse():
-                background = QtGui.QColor("#E9EAEE")
-            else:
-                background = QtGui.QColor("#F0F1F3")
+            start_color, end_color, text_color = self._filled_palette()
+            gradient = QtGui.QLinearGradient(rect.topLeft(), rect.topRight())
+            gradient.setColorAt(0.0, start_color)
+            gradient.setColorAt(1.0, end_color)
             painter.setPen(QtCore.Qt.NoPen)
-
-        painter.setBrush(background)
+            painter.setBrush(QtGui.QBrush(gradient))
         painter.drawRoundedRect(rect, radius, radius)
 
-        painter.setPen(QtGui.QColor("#6F6F6F"))
+        painter.setPen(text_color)
         font = painter.font()
         font.setPointSize(12)
-        font.setWeight(QtGui.QFont.DemiBold)
+        font.setWeight(QtGui.QFont.Bold)
         painter.setFont(font)
         fm = QtGui.QFontMetrics(font)
         text = self.text()
@@ -469,6 +546,52 @@ class PillButton(QtWidgets.QPushButton):
             icon_x = start_x + text_width + self.suffix_icon_gap
             icon_y = int(rect.y() + (rect.height() - icon_height) / 2)
             painter.drawPixmap(icon_x, icon_y, self.suffix_icon)
+
+
+class SolidPillButton(QtWidgets.QPushButton):
+    def __init__(
+        self,
+        text: str,
+        background: str,
+        hover: str,
+        pressed: str,
+        text_color: str,
+        font_px: int = 10,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(text, parent)
+        font_px = max(1, int(font_px))
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.setFlat(True)
+        self.setFixedHeight(32)
+        self.setMinimumHeight(32)
+        self.setMaximumHeight(32)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        font = QtGui.QFont("Inter")
+        font.setPixelSize(font_px)
+        font.setWeight(QtGui.QFont.DemiBold)
+        self.setFont(font)
+        self.setStyleSheet(
+            f"""
+            QPushButton {{
+                background: {background};
+                border: none;
+                border-radius: 16px;
+                color: {text_color};
+                font-family: "Inter";
+                font-size: {font_px}px;
+                font-weight: 600;
+                padding: 7px 11px;
+            }}
+            QPushButton:hover {{
+                background: {hover};
+            }}
+            QPushButton:pressed {{
+                background: {pressed};
+            }}
+            """
+        )
 
 
 class ClickableFrame(QtWidgets.QFrame):
@@ -530,7 +653,7 @@ class InfoTooltip(QtWidgets.QWidget):
             """
             QWidget#infoTooltip { background: transparent; }
             QFrame#tooltipBubble { background: #353738; border-radius: 8px; }
-            QLabel#tooltipText { color: #F7F7F8; font-size: 12px; font-weight: 400; background: transparent; }
+            QLabel#tooltipText { color: #F7F7F8; font-size: 13px; font-weight: 400; background: transparent; }
             """
         )
 
@@ -566,7 +689,7 @@ class InfoTooltip(QtWidgets.QWidget):
 
     def set_text(self, text: str) -> None:
         lines = text.splitlines() or [text]
-        fm = QtGui.QFontMetrics(QtGui.QFont(self.font().family(), 12))
+        fm = QtGui.QFontMetrics(QtGui.QFont(self.font().family(), 13))
         target_width = max(1, max(fm.horizontalAdvance(line) for line in lines))
         self.text_label.setFixedWidth(target_width)
         safe_text = (
@@ -576,7 +699,7 @@ class InfoTooltip(QtWidgets.QWidget):
             .replace("\n", "<br/>")
         )
         self.text_label.setText(
-            f'<div style="line-height:18px; color:#F7F7F8; font-size:12px;">{safe_text}</div>'
+            f'<div style="line-height:19px; color:#F7F7F8; font-size:13px;">{safe_text}</div>'
         )
 
 
@@ -586,8 +709,8 @@ class App(QtWidgets.QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(APP_NAME)
-        self.resize(400, 440)
-        self.setMinimumWidth(400)
+        self.resize(280, 640)
+        self.setMinimumWidth(280)
         self.setMinimumHeight(0)
 
         self.tool_paths = detect_tools()
@@ -611,34 +734,36 @@ class App(QtWidgets.QWidget):
 
         self.status_dot: QtWidgets.QFrame | None = None
         self.status_label: QtWidgets.QLabel | None = None
+        self.progress_bar: QtWidgets.QProgressBar | None = None
+        self.progress_label: QtWidgets.QLabel | None = None
+        self.progress_title_label: QtWidgets.QLabel | None = None
         self.info_icon_label: HoverIconLabel | None = None
         self.info_tooltip: InfoTooltip | None = None
         self.folder_button: QtWidgets.QPushButton | None = None
-        self.stop_button: QtWidgets.QPushButton | None = None
         self.dpi_button: QtWidgets.QPushButton | None = None
-        self.dpi_value_label: QtWidgets.QLabel | None = None
+        self.input_path_label: QtWidgets.QLabel | None = None
+        self.output_path_label: QtWidgets.QLabel | None = None
+        self.version_label: QtWidgets.QLabel | None = None
+        self.top_loading_label: QtWidgets.QLabel | None = None
         self.dpi_buttons: dict[int, QtWidgets.QRadioButton] = {}
         self.status_animation_timer: QtCore.QTimer | None = None
         self.status_animation_step = 0
         self.status_animation_base = ""
-        self.log_list: QtWidgets.QListWidget | None = None
-        self.log_stack: QtWidgets.QStackedLayout | None = None
-        self.log_empty_label: QtWidgets.QLabel | None = None
-        self.log_items_by_file: dict[str, QtWidgets.QListWidgetItem] = {}
-        self.history_count_label: QtWidgets.QLabel | None = None
         self.info_labels: dict[str, QtWidgets.QLabel] = {}
         self.bottom_card: QtWidgets.QFrame | None = None
+        self.shell_card: QtWidgets.QFrame | None = None
         self.bottom_layout: QtWidgets.QVBoxLayout | None = None
         self.bottom_toggle_row: ClickableFrame | None = None
         self.bottom_content_widget: QtWidgets.QWidget | None = None
         self.bottom_toggle_icon: QtWidgets.QLabel | None = None
-        self.inline_toggle_button: QtWidgets.QToolButton | None = None
         self.bottom_collapsed = False
-        self.expanded_window_height = 440
         self.startup_warning: str | None = None
-        self.version_label: QtWidgets.QLabel | None = None
         self.update_info_url = resolve_update_info_url(config)
         self.notified_update_versions: set[str] = set()
+        self.transfer_total_files = 0
+        self.transfer_completed_files = 0
+        self.current_transfer_fraction = 0.0
+        self.current_transfer_percent = 0
 
         self.first_launch_setup()
         self.build_ui()
@@ -714,377 +839,374 @@ class App(QtWidgets.QWidget):
 
     def dependency_summary(self) -> str:
         if self.tool_paths.inkscape:
-            return "의존성 상태: Inkscape 확인됨 / PNG 후처리 내장"
-        return "의존성 상태: Inkscape 필요"
+            return "Inkscape 확인됨 · SVG 저장 시 PNG 자동 생성"
+        return "Inkscape 설치가 필요합니다"
 
     def build_ui(self) -> None:
         self.setStyleSheet(
             """
             QWidget {
-                background: #f3f4f7;
-                color: #3b3b3f;
-                font-family: "Helvetica Neue";
+                background: #F5F5F5;
+                color: #4C5052;
+                font-family: "Inter";
             }
             QLabel {
                 background: transparent;
             }
-            QLabel#heroTitle {
-                color: #9E9E9E;
-                font-size: 12px;
-                font-weight: 600;
+            QFrame#shellCard {
+                background: #FCFCFC;
+                border: none;
+                border-radius: 24px;
             }
-            QLabel#statusValue {
-                color: #585E60;
-                font-size: 17px;
-                font-weight: 700;
-            }
-            QLabel#dpiValue {
-                color: #9E9E9E;
-                font-size: 12px;
-                font-weight: 400;
-            }
-            QLabel#panelTitle {
-                color: #6d6d72;
-                font-size: 12px;
-                font-weight: 600;
-            }
-            QFrame#collapseRow {
+            QWidget#transferVisualCell {
                 background: transparent;
                 border: none;
-                border-radius: 0px;
             }
-            QLabel#collapseTitle {
-                color: #585E60;
-                font-size: 12px;
-                font-weight: 600;
+            QWidget#transferFlowWidget {
                 background: transparent;
+                border: none;
             }
-            QLabel#logEmpty {
+            QWidget#transferCaptionSpacer {
+                background: transparent;
+                border: none;
+            }
+            QLabel#microLabel {
                 color: #9E9E9E;
-                font-size: 10px;
-                font-weight: 400;
-                background: transparent;
+                font-size: 12px;
+                font-weight: 500;
             }
-            QFrame#panelCard {
-                background: #ffffff;
+            QLabel#appTitle {
+                color: #4C5052;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            QLabel#microCaption {
+                color: #717171;
+                font-size: 8px;
+                font-weight: 500;
+            }
+            QLabel#microCaptionMuted {
+                color: #C0C0C0;
+                font-size: 8px;
+                font-weight: 500;
+            }
+            QLabel#sectionTitle {
+                color: #4C5052;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QProgressBar#transferProgressBar {
+                background: #E9E9E9;
+                border: none;
+                border-radius: 2px;
+                min-height: 4px;
+                max-height: 4px;
+            }
+            QProgressBar#transferProgressBar::chunk {
+                background: #39B95C;
+                border-radius: 2px;
+            }
+            QLabel#progressCaption {
+                color: #717171;
+                font-size: 9px;
+                font-weight: 500;
+            }
+            QLabel#progressValue {
+                color: #39B95C;
+                font-size: 9px;
+                font-weight: 600;
+            }
+            QFrame#detailShell {
+                background: #EAEAEA;
                 border: none;
                 border-radius: 12px;
             }
-            QFrame#card {
+            QFrame#detailToggleRow {
                 background: transparent;
                 border: none;
-                border-radius: 0px;
             }
-            QWidget#historyHeader {
-                background: transparent;
-            }
-            QWidget#infoHeader {
-                background: transparent;
-            }
-            QWidget#contentColumn {
-                background: transparent;
-            }
-            QWidget#bottomContent {
-                background: transparent;
-            }
-            QWidget#logStackHost {
-                background: transparent;
-            }
-            QRadioButton {
-                background: transparent;
-                color: #6F6F6F;
-                font-size: 12px;
-                font-weight: 400;
-            }
-            QListWidget#selectionList {
-                background: transparent;
+            QFrame#detailBody {
+                background: #FAFAFA;
                 border: none;
-                font-family: Menlo;
-                font-size: 11px;
-            }
-            QListWidget#selectionList::item {
-                padding: 6px 0px;
-                margin: 0px 0px;
-            }
-            QListWidget#selectionList::item:selected {
-                background: #eaf3ff;
-                color: #111111;
                 border-radius: 8px;
-                margin: 0px 0px;
             }
-            QScrollBar:vertical {
+            QLabel#detailTitle {
                 background: transparent;
-                width: 3px;
-                margin: 2px 0px;
-            }
-            QScrollBar::handle:vertical {
-                background: #c7c7cc;
-                min-height: 24px;
-                border-radius: 20px;
-            }
-            QScrollBar::add-line:vertical,
-            QScrollBar::sub-line:vertical {
-                height: 0px;
-                background: transparent;
-                border: none;
-            }
-            QScrollBar::add-page:vertical,
-            QScrollBar::sub-page:vertical {
-                background: transparent;
-            }
-            QLabel#infoKey {
-                color: #6b7280;
-                font-size: 11px;
+                color: #4C5052;
+                font-size: 10px;
                 font-weight: 600;
             }
-            QLabel#infoValue {
-                color: #111111;
-                font-size: 11px;
+            QLabel#detailKey {
+                color: #8D8D8D;
+                font-size: 9px;
+                font-weight: 500;
             }
-            QLabel#appVersion {
-                color: #9E9E9E;
-                font-size: 10px;
+            QLabel#detailValue {
+                color: #656565;
+                font-size: 9px;
                 font-weight: 400;
-                background: transparent;
+            }
+            QPushButton#actionButton {
+                background: #F0F1F3;
+                border: none;
+                border-radius: 16px;
+                color: #6F6F6F;
+                font-size: 10px;
+                font-weight: 600;
+                min-height: 32px;
+                padding-left: 11px;
+                padding-right: 11px;
+            }
+            QPushButton#actionButton:hover {
+                background: #E6E8EB;
+            }
+            QPushButton#actionButton:pressed {
+                background: #DDE1E5;
+            }
+            QLabel#versionLabel {
+                color: #9A9A9A;
+                font-size: 8px;
+                font-weight: 400;
+            }
+            QLabel#hiddenStatus {
+                color: transparent;
+                font-size: 1px;
+            }
+            QFrame#dot {
+                background: #D9D9D9;
+                border-radius: 2px;
+            }
+            QMenu {
+                background: #FAFAFA;
+                border: 1px solid #E5E5E5;
+                border-radius: 10px;
+                padding: 6px;
+            }
+            QMenu::item {
+                color: #4C5052;
+                padding: 6px 12px;
+                border-radius: 8px;
+            }
+            QMenu::item:selected {
+                background: #F0F1F3;
             }
             """
         )
 
         main_layout = QtWidgets.QVBoxLayout(self)
-        main_layout.setContentsMargins(14, 12, 14, 12)
-        main_layout.setSpacing(12)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        main_layout.setAlignment(QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
+        main_layout.setSizeConstraint(QtWidgets.QLayout.SetFixedSize)
 
-        top_card = QtWidgets.QFrame()
-        top_card.setObjectName("panelCard")
-        top_layout = QtWidgets.QVBoxLayout(top_card)
-        top_layout.setContentsMargins(16, 18, 16, 14)
-        top_layout.setSpacing(0)
+        self.shell_card = QtWidgets.QFrame()
+        self.shell_card.setObjectName("shellCard")
+        self.shell_card.setFixedWidth(280)
+        shell_layout = QtWidgets.QVBoxLayout(self.shell_card)
+        shell_layout.setContentsMargins(24, 30, 24, 16)
+        shell_layout.setSpacing(20)
+        shell_layout.setAlignment(QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
 
-        hero_row = QtWidgets.QHBoxLayout()
-        hero_row.setContentsMargins(0, 0, 0, 0)
-        hero_row.setSpacing(12)
-        hero_row.addWidget(self._build_hero_icon(), 0, QtCore.Qt.AlignTop)
+        title_stack = QtWidgets.QVBoxLayout()
+        title_stack.setContentsMargins(0, 0, 0, 0)
+        title_stack.setSpacing(4)
+        title_stack.setAlignment(QtCore.Qt.AlignHCenter)
 
-        hero_text = QtWidgets.QVBoxLayout()
-        hero_text.setContentsMargins(0, 0, 0, 0)
-        hero_text.setSpacing(2)
+        title_micro_row = QtWidgets.QHBoxLayout()
+        title_micro_row.setContentsMargins(0, 0, 0, 0)
+        title_micro_row.setSpacing(2)
+        title_micro_row.setAlignment(QtCore.Qt.AlignHCenter)
 
-        title_row = QtWidgets.QHBoxLayout()
-        title_row.setContentsMargins(0, 0, 0, 0)
-        title_row.setSpacing(4)
-
-        hero_title = QtWidgets.QLabel("응용 이미지 변환기")
-        hero_title.setObjectName("heroTitle")
-        title_row.addWidget(hero_title, 0, QtCore.Qt.AlignVCenter)
+        micro_label = QtWidgets.QLabel("응용 이미지 자동변환기")
+        micro_label.setObjectName("microLabel")
+        title_micro_row.addWidget(micro_label, 0, QtCore.Qt.AlignVCenter)
 
         self.info_icon_label = HoverIconLabel()
-        self.info_icon_label.setFixedSize(16, 16)
+        self.info_icon_label.setFixedSize(12, 12)
         self.info_icon_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.info_icon_label.setPixmap(self._load_info_icon_pixmap(16))
+        self.info_icon_label.setPixmap(self._load_info_icon_pixmap(12))
         self.info_icon_label.setCursor(QtCore.Qt.PointingHandCursor)
         self.info_icon_label.hovered.connect(self.show_info_tooltip)
         self.info_icon_label.unhovered.connect(self.hide_info_tooltip)
-        title_row.addWidget(self.info_icon_label, 0, QtCore.Qt.AlignVCenter)
-        title_row.addStretch(1)
-        hero_text.addLayout(title_row)
+        title_micro_row.addWidget(self.info_icon_label, 0, QtCore.Qt.AlignVCenter)
+        title_stack.addLayout(title_micro_row)
 
-        status_row = QtWidgets.QHBoxLayout()
-        status_row.setContentsMargins(0, 0, 0, 0)
-        status_row.setSpacing(8)
+        title_label = QtWidgets.QLabel("Img Auto Converter")
+        title_label.setObjectName("appTitle")
+        title_stack.addWidget(title_label, 0, QtCore.Qt.AlignHCenter)
+        shell_layout.addLayout(title_stack)
 
         self.status_label = QtWidgets.QLabel()
-        self.status_label.setObjectName("statusValue")
-        self.status_label.setAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
-        status_row.addWidget(self.status_label, 0, QtCore.Qt.AlignVCenter)
+        self.status_label.setObjectName("hiddenStatus")
+        self.status_label.hide()
+        shell_layout.addWidget(self.status_label)
 
-        status_row.addStretch(1)
+        transfer_block = QtWidgets.QWidget()
+        transfer_block.setObjectName("transferFlowWidget")
+        transfer_block.setFixedWidth(232)
+        transfer_grid = QtWidgets.QGridLayout(transfer_block)
+        transfer_grid.setContentsMargins(0, 0, 0, 0)
+        transfer_grid.setHorizontalSpacing(0)
+        transfer_grid.setVerticalSpacing(8)
+        transfer_grid.setColumnMinimumWidth(0, 87)
+        transfer_grid.setColumnMinimumWidth(1, 52)
+        transfer_grid.setColumnMinimumWidth(2, 87)
 
-        self.dpi_value_label = QtWidgets.QLabel()
-        self.dpi_value_label.setObjectName("dpiValue")
-        self.dpi_value_label.setAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignRight)
-        status_row.addWidget(self.dpi_value_label, 0, QtCore.Qt.AlignVCenter)
-        hero_text.addLayout(status_row)
-        hero_text.addStretch(1)
+        source_visual = QtWidgets.QWidget()
+        source_visual.setObjectName("transferVisualCell")
+        source_visual.setFixedSize(87, 57)
+        source_visual_layout = QtWidgets.QVBoxLayout(source_visual)
+        source_visual_layout.setContentsMargins(0, 0, 0, 0)
+        source_visual_layout.setSpacing(0)
+        source_visual_layout.setAlignment(QtCore.Qt.AlignCenter)
+        source_visual_layout.addWidget(
+            self._build_svg_label(FIGMA_ICON_FILENAMES, 57, 57),
+            0,
+            QtCore.Qt.AlignCenter,
+        )
+        transfer_grid.addWidget(source_visual, 0, 0, QtCore.Qt.AlignCenter)
 
-        hero_row.addLayout(hero_text, 1)
-        top_layout.addLayout(hero_row)
-        top_layout.addSpacing(26)
+        transfer_flow_row = QtWidgets.QHBoxLayout()
+        transfer_flow_row.setContentsMargins(0, 0, 0, 0)
+        transfer_flow_row.setSpacing(7)
+        transfer_flow_row.setAlignment(QtCore.Qt.AlignCenter)
+        for _ in range(2):
+            transfer_flow_row.addWidget(self._build_dot(), 0, QtCore.Qt.AlignVCenter)
+        self.top_loading_label = self._build_svg_label(LOADING_ICON_FILENAMES, 12, 10)
+        transfer_flow_row.addWidget(self.top_loading_label, 0, QtCore.Qt.AlignVCenter)
+        for _ in range(2):
+            transfer_flow_row.addWidget(self._build_dot(), 0, QtCore.Qt.AlignVCenter)
+        transfer_flow_widget = QtWidgets.QWidget()
+        transfer_flow_widget.setObjectName("transferFlowWidget")
+        transfer_flow_widget.setFixedSize(52, 57)
+        transfer_flow_widget_layout = QtWidgets.QVBoxLayout(transfer_flow_widget)
+        transfer_flow_widget_layout.setContentsMargins(0, 0, 0, 0)
+        transfer_flow_widget_layout.setSpacing(0)
+        transfer_flow_widget_layout.setAlignment(QtCore.Qt.AlignCenter)
+        transfer_flow_widget_layout.addLayout(transfer_flow_row)
+        transfer_grid.addWidget(transfer_flow_widget, 0, 1, QtCore.Qt.AlignCenter)
 
-        button_row = QtWidgets.QHBoxLayout()
-        button_row.setContentsMargins(0, 0, 0, 0)
-        button_row.setSpacing(8)
-        self.dpi_button = PillButton("DPI 설정", outlined=True)
-        self.dpi_button.set_suffix_icon(self._load_arrow_down_icon_pixmap(8), width=8, gap=8)
-        self.dpi_button.clicked.connect(self.show_dpi_menu)
-        button_row.addWidget(self.dpi_button, 1)
+        destination_visual = QtWidgets.QWidget()
+        destination_visual.setObjectName("transferVisualCell")
+        destination_visual.setFixedSize(87, 57)
+        destination_visual_layout = QtWidgets.QVBoxLayout(destination_visual)
+        destination_visual_layout.setContentsMargins(0, 0, 0, 0)
+        destination_visual_layout.setSpacing(0)
+        destination_visual_layout.setAlignment(QtCore.Qt.AlignCenter)
+        destination_visual_layout.addWidget(
+            self._build_svg_label(LOCAL_ICON_FILENAMES, 87, 53),
+            0,
+            QtCore.Qt.AlignCenter,
+        )
+        transfer_grid.addWidget(destination_visual, 0, 2, QtCore.Qt.AlignCenter)
 
-        self.folder_button = PillButton("폴더 열기", outlined=True)
-        self.folder_button.clicked.connect(self.open_base_dir)
-        button_row.addWidget(self.folder_button, 1)
+        self.input_path_label = QtWidgets.QLabel()
+        self.input_path_label.setFixedWidth(87)
+        self.input_path_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.input_path_label.setText(
+            "<span style='color:#C0C0C0;'>Exported from</span><br/>"
+            "<span style='color:#717171;'>Figma SVG</span>"
+        )
+        self.input_path_label.setObjectName("microCaption")
+        transfer_grid.addWidget(self.input_path_label, 1, 0, QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
 
-        self.stop_button = PillButton("변환 시작", outlined=False)
-        self.stop_button.clicked.connect(self.toggle_watch)
-        button_row.addWidget(self.stop_button, 1)
-        top_layout.addLayout(button_row)
+        transfer_caption_spacer = QtWidgets.QWidget()
+        transfer_caption_spacer.setObjectName("transferCaptionSpacer")
+        transfer_caption_spacer.setFixedSize(52, 1)
+        transfer_grid.addWidget(transfer_caption_spacer, 1, 1, QtCore.Qt.AlignTop)
 
-        main_layout.addWidget(top_card, 0)
+        self.output_path_label = QtWidgets.QLabel()
+        self.output_path_label.setFixedWidth(87)
+        self.output_path_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.output_path_label.setText(
+            "<span style='color:#C0C0C0;'>Saved to</span><br/>"
+            "<span style='color:#717171;'>Local PNG Folder</span>"
+        )
+        self.output_path_label.setObjectName("microCaption")
+        transfer_grid.addWidget(self.output_path_label, 1, 2, QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
+        shell_layout.addWidget(transfer_block, 0, QtCore.Qt.AlignHCenter)
+
+        progress_section = QtWidgets.QVBoxLayout()
+        progress_section.setContentsMargins(0, 0, 0, 0)
+        progress_section.setSpacing(12)
+        progress_section.setAlignment(QtCore.Qt.AlignHCenter)
+
+        self.progress_title_label = QtWidgets.QLabel("Transfer progress")
+        self.progress_title_label.setObjectName("sectionTitle")
+        progress_section.addWidget(self.progress_title_label, 0, QtCore.Qt.AlignHCenter)
+
+        progress_stack = QtWidgets.QVBoxLayout()
+        progress_stack.setContentsMargins(0, 0, 0, 0)
+        progress_stack.setSpacing(6)
+        progress_stack.setAlignment(QtCore.Qt.AlignHCenter)
+
+        self.progress_bar = QtWidgets.QProgressBar()
+        self.progress_bar.setObjectName("transferProgressBar")
+        self.progress_bar.setFixedWidth(189)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
+        progress_stack.addWidget(self.progress_bar, 0, QtCore.Qt.AlignHCenter)
+
+        self.progress_label = QtWidgets.QLabel()
+        self.progress_label.setAlignment(QtCore.Qt.AlignCenter)
+        progress_stack.addWidget(self.progress_label, 0, QtCore.Qt.AlignHCenter)
+        progress_section.addLayout(progress_stack)
+        shell_layout.addLayout(progress_section)
 
         self.bottom_card = QtWidgets.QFrame()
-        self.bottom_card.setObjectName("panelCard")
+        self.bottom_card.setObjectName("detailShell")
         self.bottom_layout = QtWidgets.QVBoxLayout(self.bottom_card)
-        self.bottom_layout.setContentsMargins(16, 12, 16, 10)
-        self.bottom_layout.setSpacing(8)
+        self.bottom_layout.setContentsMargins(4, 8, 4, 4)
+        self.bottom_layout.setSpacing(6)
 
         self.bottom_toggle_row = ClickableFrame()
-        self.bottom_toggle_row.setObjectName("collapseRow")
-        self.bottom_toggle_row.setFixedHeight(46)
+        self.bottom_toggle_row.setObjectName("detailToggleRow")
         self.bottom_toggle_row.setCursor(QtCore.Qt.PointingHandCursor)
         toggle_layout = QtWidgets.QHBoxLayout(self.bottom_toggle_row)
-        toggle_layout.setContentsMargins(16, 0, 16, 0)
-        toggle_layout.setSpacing(8)
+        toggle_layout.setContentsMargins(0, 0, 0, 0)
+        toggle_layout.setSpacing(6)
+        toggle_layout.setAlignment(QtCore.Qt.AlignHCenter)
 
-        toggle_title = QtWidgets.QLabel("변환 내역 / 파일 정보")
-        toggle_title.setObjectName("collapseTitle")
-        toggle_layout.addWidget(toggle_title, 0, QtCore.Qt.AlignVCenter)
-        toggle_layout.addStretch(1)
+        title_group = QtWidgets.QWidget()
+        title_group.setStyleSheet("background: transparent;")
+        title_group_layout = QtWidgets.QHBoxLayout(title_group)
+        title_group_layout.setContentsMargins(0, 0, 0, 0)
+        title_group_layout.setSpacing(2)
+        title_group_layout.setAlignment(QtCore.Qt.AlignCenter)
+
+        header_icon = QtWidgets.QLabel()
+        header_icon.setFixedSize(12, 12)
+        header_icon.setAlignment(QtCore.Qt.AlignCenter)
+        header_icon.setPixmap(self._load_detail_info_icon_pixmap(12))
+        header_icon.setStyleSheet("background: transparent;")
+        title_group_layout.addWidget(header_icon, 0, QtCore.Qt.AlignVCenter)
+
+        toggle_label = QtWidgets.QLabel("Transfer Details")
+        toggle_label.setObjectName("detailTitle")
+        title_group_layout.addWidget(toggle_label, 0, QtCore.Qt.AlignVCenter)
+        toggle_layout.addWidget(title_group, 0, QtCore.Qt.AlignVCenter)
 
         self.bottom_toggle_icon = QtWidgets.QLabel()
-        self.bottom_toggle_icon.setFixedSize(18, 18)
+        detail_arrow_size = self._svg_intrinsic_size(ARROW_UP_SMALL_ICON_FILENAMES, 7, 4)
+        self.bottom_toggle_icon.setFixedSize(detail_arrow_size)
         self.bottom_toggle_icon.setAlignment(QtCore.Qt.AlignCenter)
+        self.bottom_toggle_icon.setStyleSheet("background: transparent;")
         toggle_layout.addWidget(self.bottom_toggle_icon, 0, QtCore.Qt.AlignVCenter)
-
         self.bottom_toggle_row.clicked.connect(self.toggle_bottom_section)
-        self.bottom_layout.addWidget(self.bottom_toggle_row, 0)
+        self.bottom_layout.addWidget(self.bottom_toggle_row, 0, QtCore.Qt.AlignHCenter)
 
         self.bottom_content_widget = QtWidgets.QWidget()
-        self.bottom_content_widget.setObjectName("bottomContent")
         bottom_content_layout = QtWidgets.QVBoxLayout(self.bottom_content_widget)
         bottom_content_layout.setContentsMargins(0, 0, 0, 0)
         bottom_content_layout.setSpacing(0)
 
-        content_row = QtWidgets.QHBoxLayout()
-        content_row.setContentsMargins(0, 0, 0, 0)
-        content_row.setSpacing(4)
-
-        left_col = QtWidgets.QVBoxLayout()
-        left_col.setContentsMargins(0, 0, 0, 0)
-        left_col.setSpacing(0)
-
-        history_header_widget = ClickableFrame()
-        history_header_widget.setObjectName("historyHeader")
-        history_header_widget.setFixedHeight(20)
-        history_header_widget.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
-        )
-        history_header_widget.setCursor(QtCore.Qt.PointingHandCursor)
-        history_header_widget.clicked.connect(self.toggle_bottom_section)
-        history_header = QtWidgets.QHBoxLayout(history_header_widget)
-        history_header.setContentsMargins(0, 0, 0, 0)
-        history_header.setSpacing(0)
-        history_header.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-
-        history_title = QtWidgets.QLabel("변환 내역")
-        history_title.setObjectName("panelTitle")
-        history_title.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-        history_header.addWidget(history_title, 0, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-        history_header.addSpacing(4)
-
-        self.history_count_label = QtWidgets.QLabel()
-        self.history_count_label.setStyleSheet(
-            "color: #9D9D9D; font-size: 12px; font-weight: 600;"
-        )
-        self.history_count_label.setSizePolicy(
-            QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed
-        )
-        self.history_count_label.setContentsMargins(0, 0, 0, 0)
-        self.history_count_label.hide()
-        history_header.addWidget(
-            self.history_count_label, 0, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter
-        )
-        history_header.addStretch(1)
-        left_col.addWidget(history_header_widget, 0)
-        left_col.addSpacing(4)
-
-        log_card = self._build_card()
-        log_card.setFixedHeight(236)
-        log_layout = QtWidgets.QVBoxLayout(log_card)
-        log_layout.setContentsMargins(0, 8, 16, 14)
-        log_layout.setSpacing(0)
-
-        log_stack_host = QtWidgets.QWidget()
-        log_stack_host.setObjectName("logStackHost")
-        log_stack_host.setStyleSheet("background: transparent;")
-        log_stack_host.setAttribute(QtCore.Qt.WA_StyledBackground, True)
-        self.log_stack = QtWidgets.QStackedLayout(log_stack_host)
-        self.log_stack.setContentsMargins(0, 0, 0, 0)
-        self.log_stack.setSpacing(0)
-
-        self.log_empty_label = QtWidgets.QLabel("변환 내역이 없습니다.")
-        self.log_empty_label.setObjectName("logEmpty")
-        self.log_empty_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.log_empty_label.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
-        )
-        self.log_empty_label.setStyleSheet(
-            "QLabel#logEmpty { background: transparent; color: #9E9E9E; font-size: 10px; font-weight: 400; }"
-        )
-        self.log_stack.addWidget(self.log_empty_label)
-
-        self.log_list = QtWidgets.QListWidget()
-        self.log_list.setObjectName("selectionList")
-        self.log_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        self.log_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.log_list.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        self.log_list.itemSelectionChanged.connect(self.handle_log_selection)
-        self.log_stack.addWidget(self.log_list)
-        log_layout.addWidget(log_stack_host)
-        left_col.addWidget(log_card, 0)
-        left_col.addStretch(1)
-        left_panel = QtWidgets.QWidget()
-        left_panel.setObjectName("contentColumn")
-        left_panel.setMinimumWidth(0)
-        left_panel.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        left_panel.setLayout(left_col)
-        content_row.addWidget(left_panel, 1)
-
-        right_col = QtWidgets.QVBoxLayout()
-        right_col.setContentsMargins(0, 0, 0, 0)
-        right_col.setSpacing(0)
-
-        info_header_widget = ClickableFrame()
-        info_header_widget.setObjectName("infoHeader")
-        info_header_widget.setFixedHeight(20)
-        info_header_widget.setCursor(QtCore.Qt.PointingHandCursor)
-        info_header_widget.clicked.connect(self.toggle_bottom_section)
-        info_header = QtWidgets.QHBoxLayout(info_header_widget)
-        info_header.setContentsMargins(0, 0, 0, 0)
-        info_header.setSpacing(0)
-
-        info_title = QtWidgets.QLabel("파일 정보")
-        info_title.setObjectName("panelTitle")
-        info_header.addWidget(info_title, 0, QtCore.Qt.AlignVCenter)
-        info_header.addStretch(1)
-        self.inline_toggle_button = QtWidgets.QToolButton()
-        self.inline_toggle_button.setAutoRaise(True)
-        self.inline_toggle_button.setCursor(QtCore.Qt.PointingHandCursor)
-        self.inline_toggle_button.setFixedSize(18, 18)
-        self.inline_toggle_button.setIconSize(QtCore.QSize(18, 18))
-        self.inline_toggle_button.setStyleSheet(
-            "QToolButton { background: transparent; border: none; padding: 0px; margin: 0px; }"
-            "QToolButton:hover { background: transparent; }"
-            "QToolButton:pressed { background: transparent; }"
-        )
-        self.inline_toggle_button.clicked.connect(self.toggle_bottom_section)
-        info_header.addWidget(self.inline_toggle_button, 0, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-        right_col.addWidget(info_header_widget, 0)
-        right_col.addSpacing(4)
-
-        info_card = self._build_card()
-        info_card.setFixedHeight(236)
-        info_layout = QtWidgets.QGridLayout(info_card)
-        info_layout.setContentsMargins(0, 12, 12, 14)
-        info_layout.setHorizontalSpacing(12)
-        info_layout.setVerticalSpacing(6)
+        detail_body = QtWidgets.QFrame()
+        detail_body.setObjectName("detailBody")
+        detail_body_layout = QtWidgets.QGridLayout(detail_body)
+        detail_body_layout.setContentsMargins(12, 8, 12, 8)
+        detail_body_layout.setHorizontalSpacing(12)
+        detail_body_layout.setVerticalSpacing(7)
 
         fields = [
             "파일명",
@@ -1099,61 +1221,113 @@ class App(QtWidgets.QWidget):
         ]
         for row, field in enumerate(fields):
             key_label = QtWidgets.QLabel(field)
-            key_label.setObjectName("infoKey")
-            key_label.setFixedHeight(22)
+            key_label.setObjectName("detailKey")
             key_label.setAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
-            key_label.setContentsMargins(0, 0, 0, 0)
             value_label = QtWidgets.QLabel("-")
-            value_label.setObjectName("infoValue")
-            value_label.setFixedHeight(22)
-            value_label.setAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
+            value_label.setObjectName("detailValue")
+            value_label.setAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignRight)
             value_label.setWordWrap(False)
-            value_label.setContentsMargins(0, 0, 0, 0)
             value_label.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed)
             value_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-            info_layout.addWidget(key_label, row, 0, QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
-            info_layout.addWidget(value_label, row, 1, QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
-            info_layout.setRowMinimumHeight(row, 22)
+            detail_body_layout.addWidget(key_label, row, 0, QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
+            detail_body_layout.addWidget(value_label, row, 1, QtCore.Qt.AlignVCenter | QtCore.Qt.AlignRight)
             self.info_labels[field] = value_label
-        info_layout.setColumnStretch(1, 1)
-        right_col.addWidget(info_card, 0)
-        right_col.addStretch(1)
-        right_panel = QtWidgets.QWidget()
-        right_panel.setObjectName("contentColumn")
-        right_panel.setMinimumWidth(0)
-        right_panel.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        right_panel.setLayout(right_col)
-        content_row.addWidget(right_panel, 1)
-        content_row.setStretch(0, 1)
-        content_row.setStretch(1, 1)
+        detail_body_layout.setColumnStretch(0, 1)
+        detail_body_layout.setColumnStretch(1, 1)
+        bottom_content_layout.addWidget(detail_body)
+        self.bottom_layout.addWidget(self.bottom_content_widget)
+        shell_layout.addWidget(self.bottom_card)
 
-        bottom_content_layout.addLayout(content_row)
-        self.bottom_layout.addWidget(self.bottom_content_widget, 1)
-        main_layout.addWidget(self.bottom_card, 1)
+        button_row = QtWidgets.QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.setSpacing(10)
 
-        self.version_label = QtWidgets.QLabel(f"v{APP_VERSION}", self)
-        self.version_label.setObjectName("appVersion")
-        self.version_label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-        self.version_label.adjustSize()
-        self.position_version_label()
+        self.dpi_button = QtWidgets.QPushButton("DPI 변경")
+        self.dpi_button.setObjectName("actionButton")
+        self.dpi_button.setCursor(QtCore.Qt.PointingHandCursor)
+        dpi_arrow_size = self._svg_intrinsic_size(ARROW_UP_SMALL_ICON_FILENAMES, 7, 4)
+        self.dpi_button.setIcon(
+            QtGui.QIcon(self._load_arrow_down_small_icon_pixmap(dpi_arrow_size.width(), dpi_arrow_size.height()))
+        )
+        self.dpi_button.setIconSize(dpi_arrow_size)
+        self.dpi_button.setLayoutDirection(QtCore.Qt.RightToLeft)
+        self.dpi_button.clicked.connect(self.show_dpi_menu)
+        button_row.addWidget(self.dpi_button, 1)
+
+        self.folder_button = SolidPillButton(
+            "폴더 열기",
+            background="#2F2F2F",
+            hover="#242424",
+            pressed="#1D1D1D",
+            text_color="#FEFEFE",
+            font_px=10,
+        )
+        self.folder_button.setObjectName("folderActionButton")
+        self.folder_button.clicked.connect(self.open_base_dir)
+        button_row.addWidget(self.folder_button, 1)
+        shell_layout.addLayout(button_row)
+
+        self.version_label = QtWidgets.QLabel(f"V {APP_VERSION}")
+        self.version_label.setObjectName("versionLabel")
+        self.version_label.setAlignment(QtCore.Qt.AlignCenter)
+        shell_layout.addWidget(self.version_label, 0, QtCore.Qt.AlignHCenter)
+
+        main_layout.addWidget(self.shell_card, 0, QtCore.Qt.AlignHCenter)
 
         self.status_animation_timer = QtCore.QTimer(self)
         self.status_animation_timer.setInterval(420)
         self.status_animation_timer.timeout.connect(self._tick_status_animation)
-        self.update_dpi_display()
-        self.update_history_count()
+        self.update_runtime_summary()
+        self.update_transfer_progress(0)
         self.set_bottom_collapsed(True)
 
+    @staticmethod
+    def _build_dot() -> QtWidgets.QFrame:
+        dot = QtWidgets.QFrame()
+        dot.setObjectName("dot")
+        dot.setFixedSize(4, 4)
+        return dot
+
+    @staticmethod
+    def _build_svg_label(filenames: tuple[str, ...], width: int, height: int) -> QtWidgets.QLabel:
+        label = QtWidgets.QLabel()
+        label.setFixedSize(width, height)
+        label.setAlignment(QtCore.Qt.AlignCenter)
+        pixmap = App._load_svg_pixmap(filenames, width, height)
+        if not pixmap.isNull():
+            label.setPixmap(pixmap)
+        return label
+
+    @staticmethod
+    def _svg_intrinsic_size(
+        filenames: tuple[str, ...],
+        fallback_width: int,
+        fallback_height: int,
+    ) -> QtCore.QSize:
+        for filename in filenames:
+            icon_path = resource_path(filename)
+            if not icon_path.exists():
+                continue
+            try:
+                svg_text = icon_path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            match = re.search(r'width="([0-9.]+)".*height="([0-9.]+)"', svg_text, re.S)
+            if not match:
+                continue
+            width = max(1, int(round(float(match.group(1)))))
+            height = max(1, int(round(float(match.group(2)))))
+            return QtCore.QSize(width, height)
+        return QtCore.QSize(fallback_width, fallback_height)
+
+    def update_runtime_summary(self) -> None:
+        if self.input_path_label:
+            self.input_path_label.setToolTip(str(self.input_dir))
+        if self.output_path_label:
+            self.output_path_label.setToolTip(str(self.output_dir))
+
     def position_version_label(self) -> None:
-        if not self.version_label:
-            return
-        self.version_label.adjustSize()
-        right_margin = 14
-        bottom_margin = 10
-        x = self.width() - right_margin - self.version_label.width()
-        y = self.height() - bottom_margin - self.version_label.height()
-        self.version_label.move(max(0, x), max(0, y))
-        self.version_label.raise_()
+        return
 
     def check_for_updates_async(self) -> None:
         if not self.update_info_url:
@@ -1203,17 +1377,37 @@ class App(QtWidgets.QWidget):
     def show_dpi_menu(self) -> None:
         if not self.dpi_button:
             return
-        menu = QtWidgets.QMenu(self)
-        for value in DPI_OPTIONS:
-            action = menu.addAction(f"{value} DPI")
-            action.setCheckable(True)
-            action.setChecked(self.selected_dpi == value)
-            action.triggered.connect(lambda _checked=False, v=value: self.set_dpi(v))
-        menu.exec(self.dpi_button.mapToGlobal(QtCore.QPoint(0, self.dpi_button.height())))
+        dpi_arrow_size = self._svg_intrinsic_size(ARROW_UP_SMALL_ICON_FILENAMES, 7, 4)
+        self.dpi_button.setIcon(
+            QtGui.QIcon(
+                self._load_arrow_up_small_icon_pixmap(
+                    dpi_arrow_size.width(),
+                    dpi_arrow_size.height(),
+                )
+            )
+        )
+        self.dpi_button.setIconSize(dpi_arrow_size)
+        try:
+            menu = QtWidgets.QMenu(self)
+            for value in DPI_OPTIONS:
+                action = menu.addAction(f"{value} DPI")
+                action.setCheckable(True)
+                action.setChecked(self.selected_dpi == value)
+                action.triggered.connect(lambda _checked=False, v=value: self.set_dpi(v))
+            menu.exec(self.dpi_button.mapToGlobal(QtCore.QPoint(0, self.dpi_button.height())))
+        finally:
+            self.dpi_button.setIcon(
+                QtGui.QIcon(
+                    self._load_arrow_down_small_icon_pixmap(
+                        dpi_arrow_size.width(),
+                        dpi_arrow_size.height(),
+                    )
+                )
+            )
+            self.dpi_button.setIconSize(dpi_arrow_size)
 
     def update_dpi_display(self) -> None:
-        if self.dpi_value_label:
-            self.dpi_value_label.setText(f"{self.selected_dpi} DPI")
+        self.update_runtime_summary()
 
     def show_info_tooltip(self) -> None:
         if not self.info_icon_label:
@@ -1252,73 +1446,41 @@ class App(QtWidgets.QWidget):
         self.set_bottom_collapsed(not self.bottom_collapsed)
 
     def set_bottom_collapsed(self, collapsed: bool) -> None:
-        previous_state = self.bottom_collapsed
         self.bottom_collapsed = collapsed
-        if not self.bottom_card or not self.bottom_layout:
+        if not self.bottom_card or not self.bottom_content_widget or not self.bottom_layout:
             return
-
-        base_pixmap = self._load_arrow_down_icon_pixmap(18)
-        up_pixmap = base_pixmap.transformed(
-            QtGui.QTransform().rotate(180), QtCore.Qt.SmoothTransformation
-        )
 
         if self.bottom_toggle_icon:
-            self.bottom_toggle_icon.setPixmap(base_pixmap)
+            detail_arrow_size = self._svg_intrinsic_size(ARROW_UP_SMALL_ICON_FILENAMES, 7, 4)
+            arrow = (
+                self._load_arrow_down_small_icon_pixmap(
+                    detail_arrow_size.width(),
+                    detail_arrow_size.height(),
+                )
+                if collapsed
+                else self._load_arrow_up_small_icon_pixmap(
+                    detail_arrow_size.width(),
+                    detail_arrow_size.height(),
+                )
+            )
+            self.bottom_toggle_icon.setPixmap(arrow)
 
-        if self.inline_toggle_button:
-            self.inline_toggle_button.setIcon(QtGui.QIcon(up_pixmap))
-
+        self.bottom_content_widget.setVisible(not collapsed)
         if collapsed:
-            if not previous_state:
-                self.expanded_window_height = max(self.height(), self.expanded_window_height)
-
-            if self.inline_toggle_button:
-                self.inline_toggle_button.hide()
-            if self.bottom_toggle_row:
-                self.bottom_toggle_row.show()
-            if self.bottom_content_widget:
-                self.bottom_content_widget.hide()
-
-            self.bottom_layout.setContentsMargins(0, 0, 0, 0)
+            self.bottom_layout.setContentsMargins(4, 8, 4, 8)
             self.bottom_layout.setSpacing(0)
-            self.bottom_card.setFixedHeight(46)
-            layout = self.layout()
-            if layout:
-                layout.activate()
-                collapsed_height = max(layout.sizeHint().height(), self.minimumSizeHint().height())
-                self.setMinimumHeight(collapsed_height)
-                self.resize(self.width(), collapsed_height)
-            self.position_version_label()
-            return
+        else:
+            self.bottom_layout.setContentsMargins(4, 8, 4, 4)
+            self.bottom_layout.setSpacing(6)
 
-        if self.bottom_content_widget:
-            self.bottom_content_widget.show()
-        if self.bottom_toggle_row:
-            self.bottom_toggle_row.hide()
-        if self.inline_toggle_button:
-            self.inline_toggle_button.show()
-        self.bottom_layout.setContentsMargins(16, 12, 16, 10)
-        self.bottom_layout.setSpacing(8)
-        self.bottom_card.setMinimumHeight(0)
-        self.bottom_card.setMaximumHeight(16777215)
+        if self.folder_button:
+            self.folder_button.update()
+
+        self.adjustSize()
         layout = self.layout()
         if layout:
             layout.activate()
-            expanded_height = max(
-                self.expanded_window_height,
-                layout.sizeHint().height(),
-                self.minimumSizeHint().height(),
-                440,
-            )
-            self.setMinimumHeight(expanded_height)
-            self.resize(self.width(), expanded_height)
-        self.position_version_label()
-
-    def toggle_watch(self) -> None:
-        if self.observer:
-            self.stop_watch()
-            return
-        self.start_watch()
+        self.setFixedSize(self.sizeHint())
 
     def _tick_status_animation(self) -> None:
         if not self.status_label:
@@ -1327,133 +1489,86 @@ class App(QtWidgets.QWidget):
         dots = "." * self.status_animation_step
         self.status_label.setText(f"{self.status_animation_base}{dots}")
 
-    def _build_hero_icon(self) -> QtWidgets.QFrame:
-        frame = QtWidgets.QFrame()
-        frame.setFixedSize(HERO_ICON_BOX_SIZE, HERO_ICON_BOX_SIZE)
-        frame.setStyleSheet(
-            "QFrame { background: #E4EFFF; border: none; border-radius: 13px; }"
-        )
-
-        layout = QtWidgets.QVBoxLayout(frame)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        label = QtWidgets.QLabel()
-        label.setFixedSize(HERO_ICON_WIDTH, HERO_ICON_HEIGHT)
-        label.setAlignment(QtCore.Qt.AlignCenter)
-        label.setPixmap(self._load_logo_pixmap(HERO_ICON_WIDTH, HERO_ICON_HEIGHT))
-        layout.addWidget(label, 0, QtCore.Qt.AlignCenter)
-        return frame
+    @staticmethod
+    def _load_svg_pixmap(
+        filenames: tuple[str, ...],
+        width: int,
+        height: int,
+    ) -> QtGui.QPixmap:
+        for filename in filenames:
+            icon_path = resource_path(filename)
+            if not icon_path.exists():
+                continue
+            icon = QtGui.QIcon(str(icon_path))
+            if not icon.isNull():
+                return icon.pixmap(width, height)
+        return QtGui.QPixmap()
 
     @staticmethod
-    def _load_logo_pixmap(width: int = HERO_ICON_WIDTH, height: int = HERO_ICON_HEIGHT) -> QtGui.QPixmap:
-        icon_path = resource_path(APP_ICON_FILENAME)
-        if icon_path.exists():
-            pixmap = QtGui.QPixmap(str(icon_path))
-            if not pixmap.isNull():
-                return pixmap.scaled(
-                    width,
-                    height,
-                    QtCore.Qt.KeepAspectRatio,
-                    QtCore.Qt.SmoothTransformation,
-                )
-        fallback = App._create_logo_pixmap(max(width, height))
-        return fallback.scaled(
-            width,
-            height,
-            QtCore.Qt.KeepAspectRatio,
-            QtCore.Qt.SmoothTransformation,
-        )
+    def _tint_pixmap(pixmap: QtGui.QPixmap, color: str) -> QtGui.QPixmap:
+        if pixmap.isNull():
+            return pixmap
+        tinted = QtGui.QPixmap(pixmap.size())
+        tinted.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(tinted)
+        painter.drawPixmap(0, 0, pixmap)
+        painter.setCompositionMode(QtGui.QPainter.CompositionMode_SourceIn)
+        painter.fillRect(tinted.rect(), QtGui.QColor(color))
+        painter.end()
+        tinted.setDevicePixelRatio(pixmap.devicePixelRatio())
+        return tinted
 
     @staticmethod
     def _load_info_icon_pixmap(size: int) -> QtGui.QPixmap:
-        for filename in INFO_ICON_FILENAMES:
-            icon_path = resource_path(filename)
-            if icon_path.exists():
-                icon = QtGui.QIcon(str(icon_path))
-                if not icon.isNull():
-                    return icon.pixmap(size, size)
+        pixmap = App._load_svg_pixmap(INFO_ICON_FILENAMES, size, size)
+        if not pixmap.isNull():
+            return pixmap
         return QtWidgets.QApplication.style().standardIcon(
             QtWidgets.QStyle.SP_MessageBoxInformation
         ).pixmap(size, size)
 
     @staticmethod
+    def _load_detail_info_icon_pixmap(size: int) -> QtGui.QPixmap:
+        pixmap = App._load_info_icon_pixmap(size)
+        if not pixmap.isNull():
+            return App._tint_pixmap(pixmap, "#4C5052")
+        fallback = QtWidgets.QApplication.style().standardIcon(
+            QtWidgets.QStyle.SP_MessageBoxInformation
+        ).pixmap(size, size)
+        return App._tint_pixmap(fallback, "#4C5052")
+
+    @staticmethod
     def _load_arrow_down_icon_pixmap(size: int) -> QtGui.QPixmap:
-        for filename in ARROW_DOWN_ICON_FILENAMES:
-            icon_path = resource_path(filename)
-            if icon_path.exists():
-                icon = QtGui.QIcon(str(icon_path))
-                if not icon.isNull():
-                    return icon.pixmap(size, size)
+        pixmap = App._load_svg_pixmap(ARROW_DOWN_ICON_FILENAMES, size, size)
+        if not pixmap.isNull():
+            return pixmap
         return QtWidgets.QApplication.style().standardIcon(
             QtWidgets.QStyle.SP_ArrowDown
         ).pixmap(size, size)
 
     @staticmethod
-    def _create_logo_pixmap(size: int) -> QtGui.QPixmap:
-        pixmap = QtGui.QPixmap(size, size)
-        pixmap.fill(QtCore.Qt.transparent)
-
-        painter = QtGui.QPainter(pixmap)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
-
-        shadow_path = QtGui.QPainterPath()
-        shadow_path.moveTo(size * 0.18, size * 0.33)
-        shadow_path.lineTo(size * 0.44, size * 0.08)
-        shadow_path.lineTo(size * 0.83, size * 0.44)
-        shadow_path.lineTo(size * 0.54, size * 0.82)
-        shadow_path.lineTo(size * 0.14, size * 0.46)
-        shadow_path.closeSubpath()
-        painter.fillPath(shadow_path.translated(0, size * 0.03), QtGui.QColor(0, 0, 0, 24))
-
-        main_path = QtGui.QPainterPath()
-        main_path.moveTo(size * 0.16, size * 0.34)
-        main_path.lineTo(size * 0.44, size * 0.10)
-        main_path.lineTo(size * 0.84, size * 0.44)
-        main_path.lineTo(size * 0.56, size * 0.80)
-        main_path.lineTo(size * 0.14, size * 0.47)
-        main_path.closeSubpath()
-
-        gradient = QtGui.QLinearGradient(size * 0.15, size * 0.1, size * 0.84, size * 0.8)
-        gradient.setColorAt(0.0, QtGui.QColor("#6fb6ff"))
-        gradient.setColorAt(0.35, QtGui.QColor("#2b82ee"))
-        gradient.setColorAt(1.0, QtGui.QColor("#1a62d8"))
-        painter.setBrush(QtGui.QBrush(gradient))
-        painter.setPen(QtGui.QPen(QtGui.QColor("#2c78dd"), 1.8))
-        painter.drawPath(main_path)
-
-        facet = QtGui.QPainterPath()
-        facet.moveTo(size * 0.38, size * 0.18)
-        facet.lineTo(size * 0.50, size * 0.08)
-        facet.lineTo(size * 0.74, size * 0.28)
-        facet.lineTo(size * 0.63, size * 0.39)
-        facet.closeSubpath()
-        facet_gradient = QtGui.QLinearGradient(size * 0.38, size * 0.08, size * 0.74, size * 0.39)
-        facet_gradient.setColorAt(0.0, QtGui.QColor(255, 255, 255, 180))
-        facet_gradient.setColorAt(1.0, QtGui.QColor(255, 255, 255, 60))
-        painter.fillPath(facet, facet_gradient)
-
-        inner_line = QtGui.QPainterPath()
-        inner_line.moveTo(size * 0.26, size * 0.26)
-        inner_line.lineTo(size * 0.43, size * 0.14)
-        inner_line.lineTo(size * 0.67, size * 0.36)
-        painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 130), 2.2, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin))
-        painter.drawPath(inner_line)
-
-        painter.end()
-        return pixmap
-
-    def _build_section_title(self, title: str) -> QtWidgets.QLabel:
-        label = QtWidgets.QLabel(title)
-        label.setObjectName("sectionTitle")
-        label.setAlignment(QtCore.Qt.AlignCenter)
-        return label
+    def _load_arrow_up_icon_pixmap(size: int) -> QtGui.QPixmap:
+        pixmap = App._load_svg_pixmap(ARROW_UP_ICON_FILENAMES, size, size)
+        if not pixmap.isNull():
+            return pixmap
+        return App._load_arrow_down_icon_pixmap(size).transformed(
+            QtGui.QTransform().rotate(180),
+            QtCore.Qt.SmoothTransformation,
+        )
 
     @staticmethod
-    def _build_card() -> QtWidgets.QFrame:
-        card = QtWidgets.QFrame()
-        card.setObjectName("card")
-        return card
+    def _load_arrow_down_small_icon_pixmap(width: int, height: int) -> QtGui.QPixmap:
+        pixmap = App._load_svg_pixmap(ARROW_DOWN_SMALL_ICON_FILENAMES, width, height)
+        if not pixmap.isNull():
+            return pixmap
+        return App._load_arrow_down_icon_pixmap(max(width, height))
+
+    @staticmethod
+    def _load_arrow_up_small_icon_pixmap(width: int, height: int) -> QtGui.QPixmap:
+        pixmap = App._load_svg_pixmap(ARROW_UP_SMALL_ICON_FILENAMES, width, height)
+        if not pixmap.isNull():
+            return pixmap
+        return App._load_arrow_up_icon_pixmap(max(width, height))
 
     def open_folder(self, path: Path) -> None:
         if not ensure_directory(path):
@@ -1482,12 +1597,16 @@ class App(QtWidgets.QWidget):
     def open_base_dir(self) -> None:
         self.open_folder(DEFAULT_BASE_DIR)
 
+    def open_input_dir(self) -> None:
+        self.open_folder(self.input_dir)
+
     def open_output_dir(self) -> None:
         self.open_folder(self.output_dir)
 
     def refresh_paths(self) -> None:
         if not save_config(self.input_dir, self.output_dir, self.selected_dpi):
             self.append_log_entry("설정 저장 실패")
+        self.update_runtime_summary()
 
     def append_log(self, message: str) -> None:
         timestamp = time.strftime("%H:%M:%S")
@@ -1496,46 +1615,12 @@ class App(QtWidgets.QWidget):
 
     def append_log_entry(self, message: str, file_path: Path | None = None) -> None:
         self.append_log(message)
-        if not self.log_list:
-            return
-
-        timestamp = time.strftime("%H:%M:%S")
-        item_text = f"[{timestamp}] {message}"
-        item: QtWidgets.QListWidgetItem | None = None
-        file_key: str | None = None
-
         if file_path:
-            file_key = str(file_path)
-            item = self.log_items_by_file.get(file_key)
-
-        if item is None:
-            item = QtWidgets.QListWidgetItem(item_text)
-            if file_key:
-                item.setData(QtCore.Qt.UserRole, file_key)
-                self.log_items_by_file[file_key] = item
-            self.log_list.insertItem(0, item)
-        else:
-            item.setText(item_text)
-            row = self.log_list.row(item)
-            if row >= 0:
-                self.log_list.takeItem(row)
-            self.log_list.insertItem(0, item)
-
-        while self.log_list.count() > 200:
-            removed_item = self.log_list.takeItem(self.log_list.count() - 1)
-            if removed_item is not None:
-                removed_key = removed_item.data(QtCore.Qt.UserRole)
-                if removed_key and self.log_items_by_file.get(removed_key) is removed_item:
-                    self.log_items_by_file.pop(removed_key, None)
-        self.update_history_count()
+            self.show_file_info(file_path)
         self.flush_ui()
 
     def handle_log_selection(self) -> None:
-        if not self.log_list or not self.log_list.selectedItems():
-            return
-        path_text = self.log_list.selectedItems()[0].data(QtCore.Qt.UserRole)
-        if path_text:
-            self.show_file_info(Path(path_text))
+        return
 
     @staticmethod
     def flush_ui() -> None:
@@ -1544,32 +1629,50 @@ class App(QtWidgets.QWidget):
             app.processEvents()
 
     def update_history_count(self) -> None:
-        if not self.history_count_label or not self.log_list:
+        return
+
+    def update_transfer_progress(self, percent: int) -> None:
+        clamped = max(0, min(100, int(percent)))
+        self.current_transfer_percent = clamped
+        if self.progress_bar:
+            self.progress_bar.setValue(clamped)
+        if self.progress_label:
+            self.progress_label.setText(
+                "<span style='color:#717171; font-family:Inter; font-size:9px; font-weight:500;'>"
+                "Your file transfer is "
+                "</span>"
+                f"<span style='color:#39B95C; font-family:Inter; font-size:9px; font-weight:600;'>{clamped}%</span>"
+                "<span style='color:#717171; font-family:Inter; font-size:9px; font-weight:500;'>"
+                " completed"
+                "</span>"
+            )
+
+    def update_transfer_phase(self, phase_fraction: float) -> None:
+        if self.transfer_total_files <= 0:
+            self.update_transfer_progress(0)
+            return
+        total = max(1, self.transfer_total_files)
+        completed = min(self.transfer_completed_files, total)
+        overall = ((completed + max(0.0, min(1.0, phase_fraction))) / total) * 100.0
+        self.current_transfer_fraction = phase_fraction
+        self.update_transfer_progress(int(round(overall)))
+
+    def finish_transfer_step(self, success: bool) -> None:
+        if self.transfer_total_files <= 0:
+            self.update_transfer_progress(100 if success else 0)
             return
 
-        if self.log_stack:
-            self.log_stack.setCurrentIndex(1 if self.log_list.count() > 0 else 0)
-
-        unique_files: set[str] = set()
-        for index in range(self.log_list.count()):
-            item = self.log_list.item(index)
-            if not item:
-                continue
-            file_key = item.data(QtCore.Qt.UserRole)
-            if file_key:
-                unique_files.add(str(file_key))
-
-        count = len(unique_files)
-        if count <= 0:
-            self.history_count_label.hide()
-            self.history_count_label.clear()
+        self.transfer_completed_files = min(
+            self.transfer_total_files,
+            self.transfer_completed_files + 1,
+        )
+        self.current_transfer_fraction = 0.0
+        if self.transfer_completed_files >= self.transfer_total_files:
+            self.update_transfer_progress(100 if success else max(self.current_transfer_percent, 100))
+            self.transfer_total_files = 0
+            self.transfer_completed_files = 0
             return
-
-        if self.bottom_collapsed:
-            self.set_bottom_collapsed(False)
-
-        self.history_count_label.setText(f"{count}건")
-        self.history_count_label.show()
+        self.update_transfer_phase(0.0)
 
     def set_info_value(self, key: str, value: str) -> None:
         label = self.info_labels.get(key)
@@ -1683,7 +1786,7 @@ class App(QtWidgets.QWidget):
         self.setWindowTitle(f"{APP_NAME} - {message}")
         animated_base: str | None = None
         if message == "변환 진행 중":
-            animated_base = "변환중"
+            animated_base = "processing"
 
         if animated_base:
             self.status_animation_base = animated_base
@@ -1697,12 +1800,7 @@ class App(QtWidgets.QWidget):
             self.status_animation_timer.stop()
 
         if self.status_label:
-            if message == "변환 중지됨":
-                self.status_label.setText("변환 중지됨")
-            elif message == "변환 실패":
-                self.status_label.setText("변환 실패")
-            else:
-                self.status_label.setText(message)
+            self.status_label.setText(message)
 
     def show_dependency_warning(self) -> None:
         install_text = (
@@ -1722,6 +1820,7 @@ class App(QtWidgets.QWidget):
 
     def refresh_tools(self) -> bool:
         self.tool_paths = detect_tools()
+        self.update_runtime_summary()
         if self.tool_paths.missing:
             self.show_dependency_warning()
             return False
@@ -1730,8 +1829,6 @@ class App(QtWidgets.QWidget):
     def start_watch(self) -> None:
         if self.observer:
             self.set_status("변환 대기 중")
-            if self.stop_button:
-                self.stop_button.setText("변환 중지")
             return
 
         if not self.refresh_tools():
@@ -1768,15 +1865,11 @@ class App(QtWidgets.QWidget):
         self.observer.schedule(handler, str(self.input_dir), recursive=True)
         self.observer.start()
         self.set_status("변환 대기 중")
-        if self.stop_button:
-            self.stop_button.setText("변환 중지")
 
     def stop_watch(self) -> None:
         observer = self.observer
         if not observer:
             self.set_status("변환 중지됨")
-            if self.stop_button:
-                self.stop_button.setText("변환 시작")
             return
 
         self.observer = None
@@ -1788,8 +1881,6 @@ class App(QtWidgets.QWidget):
         self.last_processed_svg_mtimes.clear()
         self.rescan_timer.stop()
         self.set_status("변환 중지됨")
-        if self.stop_button:
-            self.stop_button.setText("변환 시작")
 
     def enqueue_event(self, path: Path) -> None:
         if is_svg_file(path):
@@ -1863,8 +1954,16 @@ class App(QtWidgets.QWidget):
         if path_key in self.pending_convert_keys:
             return
 
+        if not self.processing_convert_queue and not self.pending_convert_paths:
+            self.transfer_total_files = 0
+            self.transfer_completed_files = 0
+            self.current_transfer_fraction = 0.0
+            self.update_transfer_progress(0)
+
         self.pending_convert_paths.append(path)
         self.pending_convert_keys.add(path_key)
+        self.transfer_total_files += 1
+        self.update_transfer_phase(0.0)
 
         if not self.processing_convert_queue:
             QtCore.QTimer.singleShot(0, self.process_next_conversion)
@@ -1921,9 +2020,11 @@ class App(QtWidgets.QWidget):
             ensure_directory(self.output_dir)
             output_path = self.output_dir / f"{svg_path.stem}.png"
             self.set_status("변환 진행 중")
+            self.update_transfer_phase(0.08)
             self.flush_ui()
             self.run_pipeline(svg_path, output_path)
             self.last_processed_svg_mtimes[str(svg_path)] = current_mtime
+            self.finish_transfer_step(True)
             self.append_log_entry(f"변환 완료 {svg_path.name}", output_path)
             self.show_file_info(output_path)
             self.flush_ui()
@@ -1940,6 +2041,7 @@ class App(QtWidgets.QWidget):
             return True
         except Exception as exc:  # noqa: BLE001
             self.set_status("변환 실패")
+            self.finish_transfer_step(False)
             self.append_log_entry(f"변환 실패 {svg_path.name}")
             self.flush_ui()
             QtWidgets.QMessageBox.critical(
@@ -1959,6 +2061,7 @@ class App(QtWidgets.QWidget):
 
         env = os.environ.copy()
         env["PATH"] = build_augmented_path()
+        self.update_transfer_phase(0.2)
 
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
             temp_png = Path(tmp_file.name)
@@ -1972,8 +2075,10 @@ class App(QtWidgets.QWidget):
                 "--export-background-opacity=0",
             ]
             self.run_command(inkscape_command, env)
+            self.update_transfer_phase(0.72)
 
             self.finalize_png(temp_png, output_path)
+            self.update_transfer_phase(0.96)
         finally:
             if temp_png.exists():
                 temp_png.unlink()
@@ -1982,12 +2087,14 @@ class App(QtWidgets.QWidget):
         image = QtGui.QImage(str(temp_png))
         if image.isNull():
             raise RuntimeError("임시 PNG를 불러오지 못했습니다.")
+        self.update_transfer_phase(0.8)
 
         rgba_image = image.convertToFormat(QtGui.QImage.Format_RGBA8888)
         rgba_image.setColorSpace(QtGui.QColorSpace(QtGui.QColorSpace.NamedColorSpace.SRgb))
         dots_per_meter = int(round(self.selected_dpi / 0.0254))
         rgba_image.setDotsPerMeterX(dots_per_meter)
         rgba_image.setDotsPerMeterY(dots_per_meter)
+        self.update_transfer_phase(0.9)
 
         if not rgba_image.save(str(output_path), "PNG"):
             raise RuntimeError("최종 PNG 저장에 실패했습니다.")
