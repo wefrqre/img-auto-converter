@@ -1520,6 +1520,20 @@ class App(QtWidgets.QWidget):
         return tinted
 
     @staticmethod
+    def _normalize_pixmap_size(pixmap: QtGui.QPixmap, width: int, height: int) -> QtGui.QPixmap:
+        if pixmap.isNull():
+            return pixmap
+        normalized = QtGui.QPixmap(width, height)
+        normalized.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(normalized)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
+        painter.drawPixmap(0, 0, width, height, pixmap)
+        painter.end()
+        normalized.setDevicePixelRatio(1.0)
+        return normalized
+
+    @staticmethod
     def _load_info_icon_pixmap(size: int) -> QtGui.QPixmap:
         pixmap = App._load_svg_pixmap(INFO_ICON_FILENAMES, size, size)
         if not pixmap.isNull():
@@ -1532,11 +1546,13 @@ class App(QtWidgets.QWidget):
     def _load_detail_info_icon_pixmap(size: int) -> QtGui.QPixmap:
         pixmap = App._load_info_icon_pixmap(size)
         if not pixmap.isNull():
-            return App._tint_pixmap(pixmap, "#4C5052")
+            normalized = App._normalize_pixmap_size(pixmap, size, size)
+            return App._tint_pixmap(normalized, "#4C5052")
         fallback = QtWidgets.QApplication.style().standardIcon(
             QtWidgets.QStyle.SP_MessageBoxInformation
         ).pixmap(size, size)
-        return App._tint_pixmap(fallback, "#4C5052")
+        normalized = App._normalize_pixmap_size(fallback, size, size)
+        return App._tint_pixmap(normalized, "#4C5052")
 
     @staticmethod
     def _load_arrow_down_icon_pixmap(size: int) -> QtGui.QPixmap:
@@ -1638,15 +1654,33 @@ class App(QtWidgets.QWidget):
         if self.progress_bar:
             self.progress_bar.setValue(clamped)
         if self.progress_label:
-            self.progress_label.setText(
-                "<span style='color:#717171; font-family:Inter; font-size:9px; font-weight:500;'>"
-                "Your file transfer is "
-                "</span>"
-                f"<span style='color:#39B95C; font-family:Inter; font-size:9px; font-weight:600;'>{clamped}%</span>"
-                "<span style='color:#717171; font-family:Inter; font-size:9px; font-weight:500;'>"
-                " completed"
-                "</span>"
-            )
+            if clamped >= 100:
+                self.progress_label.setText(
+                    "<span style='color:#39B95C; font-family:Inter; font-size:9px; font-weight:600;'>"
+                    "PNG file successfully created 🎉"
+                    "</span>"
+                )
+            elif (
+                clamped <= 0
+                and self.status_text == "변환 대기 중"
+                and not self.processing_convert_queue
+                and not self.pending_convert_paths
+            ):
+                self.progress_label.setText(
+                    "<span style='color:#717171; font-family:Inter; font-size:9px; font-weight:500;'>"
+                    "Waiting for SVG file... 👀"
+                    "</span>"
+                )
+            else:
+                self.progress_label.setText(
+                    "<span style='color:#717171; font-family:Inter; font-size:9px; font-weight:500;'>"
+                    "Your file transfer is "
+                    "</span>"
+                    f"<span style='color:#39B95C; font-family:Inter; font-size:9px; font-weight:600;'>{clamped}%</span>"
+                    "<span style='color:#717171; font-family:Inter; font-size:9px; font-weight:500;'>"
+                    " completed"
+                    "</span>"
+                )
 
     def update_transfer_phase(self, phase_fraction: float) -> None:
         if self.transfer_total_files <= 0:
@@ -1802,6 +1836,14 @@ class App(QtWidgets.QWidget):
 
         if self.status_label:
             self.status_label.setText(message)
+
+        if (
+            message == "변환 대기 중"
+            and self.current_transfer_percent <= 0
+            and not self.processing_convert_queue
+            and not self.pending_convert_paths
+        ):
+            self.update_transfer_progress(0)
 
     def show_dependency_warning(self) -> None:
         install_text = (
