@@ -95,6 +95,7 @@ except ModuleNotFoundError:
 
 
 APP_NAME = "응용 이미지 자동 변환기"
+WINDOW_TITLE = "Img Auto Converter"
 APP_VERSION = "1.0.0"
 CONFIG_PATH = Path.home() / ".applied_image_auto_converter.json"
 UPDATE_URL_CONFIG_PATH = Path.home() / ".applied_image_auto_converter_update_url.txt"
@@ -708,7 +709,7 @@ class App(QtWidgets.QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle(APP_NAME)
+        self.setWindowTitle(WINDOW_TITLE)
         self.resize(280, 640)
         self.setMinimumWidth(280)
         self.setMinimumHeight(0)
@@ -1783,7 +1784,7 @@ class App(QtWidgets.QWidget):
 
     def set_status(self, message: str) -> None:
         self.status_text = message
-        self.setWindowTitle(f"{APP_NAME} - {message}")
+        self.setWindowTitle(f"{WINDOW_TITLE} - {message}")
         animated_base: str | None = None
         if message == "변환 진행 중":
             animated_base = "processing"
