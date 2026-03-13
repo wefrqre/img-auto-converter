@@ -112,9 +112,9 @@ ARROW_DOWN_SMALL_ICON_FILENAMES = (
 ARROW_UP_SMALL_ICON_FILENAMES = ("arrow_up_small.svg", "arrow-up-small.svg")
 ARROW_FORWARD_ICON_FILENAMES = ("arrow_forward.svg", "arrow-forward.svg")
 FIGMA_ICON_FILENAMES = ("Figma.svg", "figma.svg")
-LOCAL_ICON_FILENAMES = ("Local.svg", "local.svg")
+LOCAL_ICON_FILENAMES = ("Local.png", "local.png", "Local.svg", "local.svg")
 LOADING_ICON_FILENAMES = ("loading.svg", "Loading.svg")
-INFO_TOOLTIP_TEXT = "Figma에서 svg를 input(svg)폴더에 저장하면\nPNG로 자동 변환됩니다."
+INFO_TOOLTIP_TEXT = "Figma에서 svg를 input폴더에 저장하면\nPNG로 자동 변환됩니다."
 DEFAULT_BASE_DIR = Path.home() / "Desktop" / "figma_exports"
 LEGACY_INPUT_DIR = DEFAULT_BASE_DIR / "svg"
 DEFAULT_INPUT_DIR = DEFAULT_BASE_DIR / "input(svg)"
@@ -960,6 +960,14 @@ class App(QtWidgets.QWidget):
                 border: none;
                 border-radius: 8px;
             }
+            QWidget#detailActionsGroup {
+                background: transparent;
+                border: none;
+            }
+            QWidget#detailButtonsRow {
+                background: transparent;
+                border: none;
+            }
             QLabel#detailTitle {
                 background: transparent;
                 color: #4C5052;
@@ -1110,6 +1118,7 @@ class App(QtWidgets.QWidget):
         title_label.setObjectName("appTitle")
         title_stack.addWidget(title_label, 0, QtCore.Qt.AlignHCenter)
         shell_layout.addLayout(title_stack)
+        shell_layout.addSpacing(4)
 
         self.status_label = QtWidgets.QLabel()
         self.status_label.setObjectName("hiddenStatus")
@@ -1119,27 +1128,25 @@ class App(QtWidgets.QWidget):
         transfer_block = QtWidgets.QWidget()
         transfer_block.setObjectName("transferFlowWidget")
         transfer_block.setFixedWidth(232)
-        transfer_grid = QtWidgets.QGridLayout(transfer_block)
-        transfer_grid.setContentsMargins(0, 0, 0, 0)
-        transfer_grid.setHorizontalSpacing(0)
-        transfer_grid.setVerticalSpacing(8)
-        transfer_grid.setColumnMinimumWidth(0, 87)
-        transfer_grid.setColumnMinimumWidth(1, 52)
-        transfer_grid.setColumnMinimumWidth(2, 87)
+        transfer_block_layout = QtWidgets.QVBoxLayout(transfer_block)
+        transfer_block_layout.setContentsMargins(0, 0, 0, 0)
+        transfer_block_layout.setSpacing(8)
+        transfer_block_layout.setAlignment(QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
 
         source_visual = QtWidgets.QWidget()
         source_visual.setObjectName("transferVisualCell")
-        source_visual.setFixedSize(87, 57)
+        source_visual.setFixedSize(54, 57)
         source_visual_layout = QtWidgets.QVBoxLayout(source_visual)
         source_visual_layout.setContentsMargins(0, 0, 0, 0)
         source_visual_layout.setSpacing(0)
         source_visual_layout.setAlignment(QtCore.Qt.AlignCenter)
-        source_visual_layout.addWidget(
-            self._build_svg_label(FIGMA_ICON_FILENAMES, 57, 57),
-            0,
-            QtCore.Qt.AlignCenter,
+        figma_icon_size = self._svg_intrinsic_size(FIGMA_ICON_FILENAMES, 57, 57)
+        source_icon_label = self._build_svg_label(
+            FIGMA_ICON_FILENAMES,
+            figma_icon_size.width(),
+            figma_icon_size.height(),
         )
-        transfer_grid.addWidget(source_visual, 0, 0, QtCore.Qt.AlignCenter)
+        source_visual_layout.addWidget(source_icon_label, 0, QtCore.Qt.AlignCenter)
 
         transfer_flow_row = QtWidgets.QHBoxLayout()
         transfer_flow_row.setContentsMargins(0, 0, 0, 0)
@@ -1159,7 +1166,6 @@ class App(QtWidgets.QWidget):
         transfer_flow_widget_layout.setSpacing(0)
         transfer_flow_widget_layout.setAlignment(QtCore.Qt.AlignCenter)
         transfer_flow_widget_layout.addLayout(transfer_flow_row)
-        transfer_grid.addWidget(transfer_flow_widget, 0, 1, QtCore.Qt.AlignCenter)
 
         destination_visual = QtWidgets.QWidget()
         destination_visual.setObjectName("transferVisualCell")
@@ -1168,27 +1174,31 @@ class App(QtWidgets.QWidget):
         destination_visual_layout.setContentsMargins(0, 0, 0, 0)
         destination_visual_layout.setSpacing(0)
         destination_visual_layout.setAlignment(QtCore.Qt.AlignCenter)
-        destination_visual_layout.addWidget(
-            self._build_svg_label(LOCAL_ICON_FILENAMES, 87, 53),
-            0,
-            QtCore.Qt.AlignCenter,
+        local_icon_size = self._svg_intrinsic_size(LOCAL_ICON_FILENAMES, 87, 53)
+        destination_icon_label = self._build_svg_label(
+            LOCAL_ICON_FILENAMES,
+            local_icon_size.width(),
+            local_icon_size.height(),
         )
-        transfer_grid.addWidget(destination_visual, 0, 2, QtCore.Qt.AlignCenter)
+        destination_visual_layout.addWidget(destination_icon_label, 0, QtCore.Qt.AlignCenter)
+
+        transfer_visual_row = QtWidgets.QHBoxLayout()
+        transfer_visual_row.setContentsMargins(0, 0, 0, 0)
+        transfer_visual_row.setSpacing(19)
+        transfer_visual_row.setAlignment(QtCore.Qt.AlignCenter)
+        transfer_visual_row.addWidget(source_visual, 0, QtCore.Qt.AlignVCenter)
+        transfer_visual_row.addWidget(transfer_flow_widget, 0, QtCore.Qt.AlignVCenter)
+        transfer_visual_row.addWidget(destination_visual, 0, QtCore.Qt.AlignVCenter)
+        transfer_block_layout.addLayout(transfer_visual_row)
 
         self.input_path_label = QtWidgets.QLabel()
-        self.input_path_label.setFixedWidth(87)
+        self.input_path_label.setFixedWidth(54)
         self.input_path_label.setAlignment(QtCore.Qt.AlignCenter)
         self.input_path_label.setText(
             "<span style='color:#C0C0C0;'>Exported from</span><br/>"
             "<span style='color:#717171;'>Figma SVG</span>"
         )
         self.input_path_label.setObjectName("microCaption")
-        transfer_grid.addWidget(self.input_path_label, 1, 0, QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
-
-        transfer_caption_spacer = QtWidgets.QWidget()
-        transfer_caption_spacer.setObjectName("transferCaptionSpacer")
-        transfer_caption_spacer.setFixedSize(52, 1)
-        transfer_grid.addWidget(transfer_caption_spacer, 1, 1, QtCore.Qt.AlignTop)
 
         self.output_path_label = QtWidgets.QLabel()
         self.output_path_label.setFixedWidth(87)
@@ -1198,7 +1208,18 @@ class App(QtWidgets.QWidget):
             "<span style='color:#717171;'>Local PNG Folder</span>"
         )
         self.output_path_label.setObjectName("microCaption")
-        transfer_grid.addWidget(self.output_path_label, 1, 2, QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
+        transfer_caption_spacer = QtWidgets.QWidget()
+        transfer_caption_spacer.setObjectName("transferCaptionSpacer")
+        transfer_caption_spacer.setFixedSize(52, 1)
+
+        transfer_caption_row = QtWidgets.QHBoxLayout()
+        transfer_caption_row.setContentsMargins(0, 0, 0, 0)
+        transfer_caption_row.setSpacing(19)
+        transfer_caption_row.setAlignment(QtCore.Qt.AlignCenter)
+        transfer_caption_row.addWidget(self.input_path_label, 0, QtCore.Qt.AlignTop)
+        transfer_caption_row.addWidget(transfer_caption_spacer, 0, QtCore.Qt.AlignTop)
+        transfer_caption_row.addWidget(self.output_path_label, 0, QtCore.Qt.AlignTop)
+        transfer_block_layout.addLayout(transfer_caption_row)
         shell_layout.addWidget(transfer_block, 0, QtCore.Qt.AlignHCenter)
 
         progress_section = QtWidgets.QVBoxLayout()
@@ -1228,6 +1249,13 @@ class App(QtWidgets.QWidget):
         progress_stack.addWidget(self.progress_label, 0, QtCore.Qt.AlignHCenter)
         progress_section.addLayout(progress_stack)
         shell_layout.addLayout(progress_section)
+
+        detail_actions_group = QtWidgets.QWidget()
+        detail_actions_group.setObjectName("detailActionsGroup")
+        detail_actions_group.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        detail_actions_layout = QtWidgets.QVBoxLayout(detail_actions_group)
+        detail_actions_layout.setContentsMargins(0, 0, 0, 0)
+        detail_actions_layout.setSpacing(12)
 
         self.bottom_card = QtWidgets.QFrame()
         self.bottom_card.setObjectName("detailShell")
@@ -1278,6 +1306,8 @@ class App(QtWidgets.QWidget):
 
         detail_body = QtWidgets.QFrame()
         detail_body.setObjectName("detailBody")
+        detail_body.setFrameShape(QtWidgets.QFrame.NoFrame)
+        detail_body.setAttribute(QtCore.Qt.WA_StyledBackground, True)
         detail_body_layout = QtWidgets.QVBoxLayout(detail_body)
         detail_body_layout.setContentsMargins(12, 10, 12, 8)
         detail_body_layout.setSpacing(20)
@@ -1368,9 +1398,12 @@ class App(QtWidgets.QWidget):
         detail_body_layout.addLayout(info_row)
         bottom_content_layout.addWidget(detail_body)
         self.bottom_layout.addWidget(self.bottom_content_widget)
-        shell_layout.addWidget(self.bottom_card)
+        detail_actions_layout.addWidget(self.bottom_card)
 
-        button_row = QtWidgets.QHBoxLayout()
+        button_row_widget = QtWidgets.QWidget()
+        button_row_widget.setObjectName("detailButtonsRow")
+        button_row_widget.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        button_row = QtWidgets.QHBoxLayout(button_row_widget)
         button_row.setContentsMargins(0, 0, 0, 0)
         button_row.setSpacing(10)
 
@@ -1397,7 +1430,8 @@ class App(QtWidgets.QWidget):
         self.folder_button.setObjectName("folderActionButton")
         self.folder_button.clicked.connect(self.open_base_dir)
         button_row.addWidget(self.folder_button, 1)
-        shell_layout.addLayout(button_row)
+        detail_actions_layout.addWidget(button_row_widget)
+        shell_layout.addWidget(detail_actions_group)
 
         self.version_label = QtWidgets.QLabel(f"V {APP_VERSION}")
         self.version_label.setObjectName("versionLabel")
@@ -1411,7 +1445,7 @@ class App(QtWidgets.QWidget):
         self.status_animation_timer.timeout.connect(self._tick_status_animation)
         self.history_button_group = QtWidgets.QButtonGroup(self)
         self.history_button_group.setExclusive(True)
-        self.update_runtime_summary()
+        self.update_dpi_display()
         self.update_history_count()
         self.update_transfer_progress(0)
         self.set_bottom_collapsed(True)
@@ -1443,16 +1477,35 @@ class App(QtWidgets.QWidget):
             icon_path = resource_path(filename)
             if not icon_path.exists():
                 continue
+            if icon_path.suffix.lower() != ".svg":
+                reader = QtGui.QImageReader(str(icon_path))
+                size = reader.size()
+                if size.isValid():
+                    return size
+                continue
             try:
                 svg_text = icon_path.read_text(encoding="utf-8", errors="ignore")
-            except OSError:
+            except (OSError, UnicodeError):
                 continue
-            match = re.search(r'width="([0-9.]+)".*height="([0-9.]+)"', svg_text, re.S)
-            if not match:
-                continue
-            width = max(1, int(round(float(match.group(1)))))
-            height = max(1, int(round(float(match.group(2)))))
-            return QtCore.QSize(width, height)
+            svg_tag = re.search(r"<svg\b([^>]*)>", svg_text, re.I | re.S)
+            if svg_tag:
+                attributes = svg_tag.group(1)
+                width_match = re.search(r'width="([0-9.]+)"', attributes)
+                height_match = re.search(r'height="([0-9.]+)"', attributes)
+                if width_match and height_match:
+                    width = max(1, int(round(float(width_match.group(1)))))
+                    height = max(1, int(round(float(height_match.group(1)))))
+                    return QtCore.QSize(width, height)
+
+                viewbox_match = re.search(
+                    r'viewBox="[0-9.\s-]+?\s([0-9.]+)\s([0-9.]+)"',
+                    attributes,
+                    re.I,
+                )
+                if viewbox_match:
+                    width = max(1, int(round(float(viewbox_match.group(1)))))
+                    height = max(1, int(round(float(viewbox_match.group(2)))))
+                    return QtCore.QSize(width, height)
         return QtCore.QSize(fallback_width, fallback_height)
 
     def update_runtime_summary(self) -> None:
@@ -1542,6 +1595,8 @@ class App(QtWidgets.QWidget):
             self.dpi_button.setIconSize(dpi_arrow_size)
 
     def update_dpi_display(self) -> None:
+        if self.dpi_button:
+            self.dpi_button.setText(f"{self.selected_dpi} DPI")
         self.update_runtime_summary()
 
     def show_info_tooltip(self) -> None:

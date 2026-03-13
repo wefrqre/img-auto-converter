@@ -8,6 +8,7 @@ datas = [
     ("arrow-down.svg", "."),
     ("arrow-up.svg", "."),
     ("Figma.svg", "."),
+    ("Local.png", "."),
     ("Local.svg", "."),
     ("loading.svg", "."),
     ("update_url.txt", "."),
