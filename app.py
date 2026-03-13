@@ -96,7 +96,7 @@ except ModuleNotFoundError:
 
 APP_NAME = "응용 이미지 자동 변환기"
 WINDOW_TITLE = "Img Auto Converter"
-APP_VERSION = "1.0.8"
+APP_VERSION = "1.0.9"
 CONFIG_PATH = Path.home() / ".applied_image_auto_converter.json"
 UPDATE_URL_CONFIG_PATH = Path.home() / ".applied_image_auto_converter_update_url.txt"
 UPDATE_URL_BUNDLED_FILENAME = "update_url.txt"
@@ -573,12 +573,14 @@ class SolidPillButton(QtWidgets.QPushButton):
     ) -> None:
         super().__init__(text, parent)
         font_px = max(1, int(font_px))
+        button_height = max(32, font_px + 22)
+        border_radius = button_height // 2
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setFocusPolicy(QtCore.Qt.NoFocus)
         self.setFlat(True)
-        self.setFixedHeight(32)
-        self.setMinimumHeight(32)
-        self.setMaximumHeight(32)
+        self.setFixedHeight(button_height)
+        self.setMinimumHeight(button_height)
+        self.setMaximumHeight(button_height)
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         font = QtGui.QFont("Inter")
         font.setPixelSize(font_px)
@@ -589,7 +591,7 @@ class SolidPillButton(QtWidgets.QPushButton):
             QPushButton {{
                 background: {background};
                 border: none;
-                border-radius: 16px;
+                border-radius: {border_radius}px;
                 color: {text_color};
                 font-family: "Inter";
                 font-size: {font_px}px;
@@ -626,6 +628,41 @@ class HoverIconLabel(QtWidgets.QLabel):
     def leaveEvent(self, event: QtCore.QEvent) -> None:  # noqa: N802
         self.unhovered.emit()
         super().leaveEvent(event)
+
+
+class RotatingIconLabel(QtWidgets.QWidget):
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._pixmap = QtGui.QPixmap()
+        self._rotation_angle = 0.0
+        self._opacity = 0.6
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+
+    def set_pixmap(self, pixmap: QtGui.QPixmap) -> None:
+        self._pixmap = pixmap
+        self.update()
+
+    def set_rotation_angle(self, angle: float) -> None:
+        self._rotation_angle = float(angle)
+        self.update()
+
+    def set_opacity(self, opacity: float) -> None:
+        self._opacity = max(0.0, min(1.0, float(opacity)))
+        self.update()
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:  # noqa: N802
+        del event
+        if self._pixmap.isNull():
+            return
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
+        painter.setOpacity(self._opacity)
+        painter.translate(self.rect().center())
+        painter.rotate(self._rotation_angle)
+        pixmap_size = self._pixmap.deviceIndependentSize()
+        painter.translate(-pixmap_size.width() / 2.0, -pixmap_size.height() / 2.0)
+        painter.drawPixmap(0, 0, self._pixmap)
 
 
 class TooltipPointer(QtWidgets.QWidget):
@@ -756,11 +793,15 @@ class App(QtWidgets.QWidget):
         self.input_path_label: QtWidgets.QLabel | None = None
         self.output_path_label: QtWidgets.QLabel | None = None
         self.version_label: QtWidgets.QLabel | None = None
-        self.top_loading_label: QtWidgets.QLabel | None = None
+        self.top_loading_label: RotatingIconLabel | None = None
         self.dpi_buttons: dict[int, QtWidgets.QRadioButton] = {}
         self.status_animation_timer: QtCore.QTimer | None = None
         self.status_animation_step = 0
         self.status_animation_base = ""
+        self.transfer_flow_timer: QtCore.QTimer | None = None
+        self.transfer_flow_stage = 0
+        self.transfer_flow_rotation_angle = 0
+        self.transfer_flow_dots: list[QtWidgets.QFrame] = []
         self.info_labels: dict[str, QtWidgets.QLabel] = {}
         self.history_count_label: QtWidgets.QLabel | None = None
         self.history_section_widget: QtWidgets.QWidget | None = None
@@ -912,17 +953,17 @@ class App(QtWidgets.QWidget):
             }
             QLabel#microCaption {
                 color: #717171;
-                font-size: 8px;
+                font-size: 10px;
                 font-weight: 500;
             }
             QLabel#microCaptionMuted {
                 color: #C0C0C0;
-                font-size: 8px;
+                font-size: 10px;
                 font-weight: 500;
             }
             QLabel#sectionTitle {
                 color: #4C5052;
-                font-size: 13px;
+                font-size: 14px;
                 font-weight: 600;
             }
             QProgressBar#transferProgressBar {
@@ -938,12 +979,12 @@ class App(QtWidgets.QWidget):
             }
             QLabel#progressCaption {
                 color: #717171;
-                font-size: 9px;
+                font-size: 11px;
                 font-weight: 500;
             }
             QLabel#progressValue {
                 color: #39B95C;
-                font-size: 9px;
+                font-size: 11px;
                 font-weight: 600;
             }
             QFrame#detailShell {
@@ -971,23 +1012,23 @@ class App(QtWidgets.QWidget):
             QLabel#detailTitle {
                 background: transparent;
                 color: #4C5052;
-                font-size: 10px;
+                font-size: 12px;
                 font-weight: 600;
             }
             QLabel#detailKey {
                 color: #8D8D8D;
-                font-size: 9px;
+                font-size: 11px;
                 font-weight: 500;
             }
             QLabel#historyCountLabel {
                 background: transparent;
                 color: #8D8D8D;
-                font-size: 9px;
+                font-size: 10px;
                 font-weight: 500;
             }
             QLabel#detailValue {
                 color: #656565;
-                font-size: 9px;
+                font-size: 11px;
                 font-weight: 400;
             }
             QScrollArea#thumbnailScrollArea {
@@ -1032,11 +1073,11 @@ class App(QtWidgets.QWidget):
             QPushButton#actionButton {
                 background: #F0F1F3;
                 border: none;
-                border-radius: 16px;
+                border-radius: 17px;
                 color: #6F6F6F;
-                font-size: 10px;
+                font-size: 12px;
                 font-weight: 600;
-                min-height: 32px;
+                min-height: 34px;
                 padding-left: 11px;
                 padding-right: 11px;
             }
@@ -1048,7 +1089,7 @@ class App(QtWidgets.QWidget):
             }
             QLabel#versionLabel {
                 color: #9A9A9A;
-                font-size: 8px;
+                font-size: 9px;
                 font-weight: 400;
             }
             QLabel#hiddenStatus {
@@ -1152,12 +1193,19 @@ class App(QtWidgets.QWidget):
         transfer_flow_row.setContentsMargins(0, 0, 0, 0)
         transfer_flow_row.setSpacing(7)
         transfer_flow_row.setAlignment(QtCore.Qt.AlignCenter)
+        self.transfer_flow_dots = []
         for _ in range(2):
-            transfer_flow_row.addWidget(self._build_dot(), 0, QtCore.Qt.AlignVCenter)
-        self.top_loading_label = self._build_svg_label(LOADING_ICON_FILENAMES, 12, 10)
+            dot = self._build_dot()
+            self.transfer_flow_dots.append(dot)
+            transfer_flow_row.addWidget(dot, 0, QtCore.Qt.AlignVCenter)
+        self.top_loading_label = RotatingIconLabel()
+        self.top_loading_label.setFixedSize(12, 10)
+        self.top_loading_label.set_pixmap(self._load_svg_pixmap(LOADING_ICON_FILENAMES, 12, 10))
         transfer_flow_row.addWidget(self.top_loading_label, 0, QtCore.Qt.AlignVCenter)
         for _ in range(2):
-            transfer_flow_row.addWidget(self._build_dot(), 0, QtCore.Qt.AlignVCenter)
+            dot = self._build_dot()
+            self.transfer_flow_dots.append(dot)
+            transfer_flow_row.addWidget(dot, 0, QtCore.Qt.AlignVCenter)
         transfer_flow_widget = QtWidgets.QWidget()
         transfer_flow_widget.setObjectName("transferFlowWidget")
         transfer_flow_widget.setFixedSize(52, 57)
@@ -1191,36 +1239,10 @@ class App(QtWidgets.QWidget):
         transfer_visual_row.addWidget(destination_visual, 0, QtCore.Qt.AlignVCenter)
         transfer_block_layout.addLayout(transfer_visual_row)
 
-        self.input_path_label = QtWidgets.QLabel()
-        self.input_path_label.setFixedWidth(54)
-        self.input_path_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.input_path_label.setText(
-            "<span style='color:#C0C0C0;'>Exported from</span><br/>"
-            "<span style='color:#717171;'>Figma SVG</span>"
-        )
-        self.input_path_label.setObjectName("microCaption")
-
-        self.output_path_label = QtWidgets.QLabel()
-        self.output_path_label.setFixedWidth(87)
-        self.output_path_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.output_path_label.setText(
-            "<span style='color:#C0C0C0;'>Saved to</span><br/>"
-            "<span style='color:#717171;'>Local PNG Folder</span>"
-        )
-        self.output_path_label.setObjectName("microCaption")
-        transfer_caption_spacer = QtWidgets.QWidget()
-        transfer_caption_spacer.setObjectName("transferCaptionSpacer")
-        transfer_caption_spacer.setFixedSize(52, 1)
-
-        transfer_caption_row = QtWidgets.QHBoxLayout()
-        transfer_caption_row.setContentsMargins(0, 0, 0, 0)
-        transfer_caption_row.setSpacing(19)
-        transfer_caption_row.setAlignment(QtCore.Qt.AlignCenter)
-        transfer_caption_row.addWidget(self.input_path_label, 0, QtCore.Qt.AlignTop)
-        transfer_caption_row.addWidget(transfer_caption_spacer, 0, QtCore.Qt.AlignTop)
-        transfer_caption_row.addWidget(self.output_path_label, 0, QtCore.Qt.AlignTop)
-        transfer_block_layout.addLayout(transfer_caption_row)
+        self.input_path_label = None
+        self.output_path_label = None
         shell_layout.addWidget(transfer_block, 0, QtCore.Qt.AlignHCenter)
+        shell_layout.addSpacing(4)
 
         progress_section = QtWidgets.QVBoxLayout()
         progress_section.setContentsMargins(0, 0, 0, 0)
@@ -1249,6 +1271,7 @@ class App(QtWidgets.QWidget):
         progress_stack.addWidget(self.progress_label, 0, QtCore.Qt.AlignHCenter)
         progress_section.addLayout(progress_stack)
         shell_layout.addLayout(progress_section)
+        shell_layout.addSpacing(4)
 
         detail_actions_group = QtWidgets.QWidget()
         detail_actions_group.setObjectName("detailActionsGroup")
@@ -1425,7 +1448,7 @@ class App(QtWidgets.QWidget):
             hover="#242424",
             pressed="#1D1D1D",
             text_color="#FEFEFE",
-            font_px=10,
+            font_px=11,
         )
         self.folder_button.setObjectName("folderActionButton")
         self.folder_button.clicked.connect(self.open_base_dir)
@@ -1443,9 +1466,13 @@ class App(QtWidgets.QWidget):
         self.status_animation_timer = QtCore.QTimer(self)
         self.status_animation_timer.setInterval(420)
         self.status_animation_timer.timeout.connect(self._tick_status_animation)
+        self.transfer_flow_timer = QtCore.QTimer(self)
+        self.transfer_flow_timer.setInterval(220)
+        self.transfer_flow_timer.timeout.connect(self._tick_transfer_flow_animation)
         self.history_button_group = QtWidgets.QButtonGroup(self)
         self.history_button_group.setExclusive(True)
         self.update_dpi_display()
+        self._reset_transfer_flow_animation()
         self.update_history_count()
         self.update_transfer_progress(0)
         self.set_bottom_collapsed(True)
@@ -1456,6 +1483,73 @@ class App(QtWidgets.QWidget):
         dot.setObjectName("dot")
         dot.setFixedSize(4, 4)
         return dot
+
+    def _set_transfer_flow_dot_active(self, dot: QtWidgets.QFrame, active: bool) -> None:
+        color = "#B7B7B7" if active else "#D9D9D9"
+        dot.setStyleSheet(f"background: {color}; border-radius: 2px;")
+
+    def _reset_transfer_flow_animation(self) -> None:
+        self.transfer_flow_stage = 0
+        self.transfer_flow_rotation_angle = 0
+        for dot in self.transfer_flow_dots:
+            self._set_transfer_flow_dot_active(dot, False)
+        if self.top_loading_label:
+            self.top_loading_label.set_rotation_angle(0)
+            self.top_loading_label.set_opacity(0.68)
+
+    def _start_transfer_flow_animation(self) -> None:
+        if not self.transfer_flow_timer:
+            return
+        self._reset_transfer_flow_animation()
+        if not self.transfer_flow_timer.isActive():
+            self.transfer_flow_timer.start()
+        self._tick_transfer_flow_animation()
+
+    def _stop_transfer_flow_animation(self) -> None:
+        if self.transfer_flow_timer and self.transfer_flow_timer.isActive():
+            self.transfer_flow_timer.stop()
+        self._reset_transfer_flow_animation()
+
+    def _tick_transfer_flow_animation(self) -> None:
+        if not self.top_loading_label or not self.transfer_flow_dots:
+            return
+
+        for dot in self.transfer_flow_dots:
+            self._set_transfer_flow_dot_active(dot, False)
+
+        if self.transfer_flow_stage == 0:
+            self._set_transfer_flow_dot_active(self.transfer_flow_dots[0], True)
+            self.top_loading_label.set_rotation_angle(0)
+            self.top_loading_label.set_opacity(0.68)
+            self.transfer_flow_stage = 1
+            return
+
+        if self.transfer_flow_stage == 1:
+            self._set_transfer_flow_dot_active(self.transfer_flow_dots[1], True)
+            self.top_loading_label.set_rotation_angle(0)
+            self.top_loading_label.set_opacity(0.68)
+            self.transfer_flow_stage = 2
+            return
+
+        if self.transfer_flow_stage == 2:
+            self.top_loading_label.set_opacity(1.0)
+            self.transfer_flow_rotation_angle = (self.transfer_flow_rotation_angle + 30) % 360
+            self.top_loading_label.set_rotation_angle(self.transfer_flow_rotation_angle)
+            if self.transfer_flow_rotation_angle == 0:
+                self.transfer_flow_stage = 3
+            return
+
+        if self.transfer_flow_stage == 3:
+            self._set_transfer_flow_dot_active(self.transfer_flow_dots[2], True)
+            self.top_loading_label.set_rotation_angle(0)
+            self.top_loading_label.set_opacity(0.68)
+            self.transfer_flow_stage = 4
+            return
+
+        self._set_transfer_flow_dot_active(self.transfer_flow_dots[3], True)
+        self.top_loading_label.set_rotation_angle(0)
+        self.top_loading_label.set_opacity(0.68)
+        self.transfer_flow_stage = 0
 
     @staticmethod
     def _build_svg_label(filenames: tuple[str, ...], width: int, height: int) -> QtWidgets.QLabel:
@@ -1961,7 +2055,7 @@ class App(QtWidgets.QWidget):
         if self.progress_label:
             if clamped >= 100:
                 self.progress_label.setText(
-                    "<span style='color:#39B95C; font-family:Inter; font-size:9px; font-weight:600;'>"
+                    "<span style='color:#39B95C; font-family:Inter; font-size:11px; font-weight:600;'>"
                     "PNG file successfully created 🎉"
                     "</span>"
                 )
@@ -1972,17 +2066,17 @@ class App(QtWidgets.QWidget):
                 and not self.pending_convert_paths
             ):
                 self.progress_label.setText(
-                    "<span style='color:#717171; font-family:Inter; font-size:9px; font-weight:500;'>"
+                    "<span style='color:#717171; font-family:Inter; font-size:11px; font-weight:500;'>"
                     "Waiting for SVG file... 👀"
                     "</span>"
                 )
             else:
                 self.progress_label.setText(
-                    "<span style='color:#717171; font-family:Inter; font-size:9px; font-weight:500;'>"
+                    "<span style='color:#717171; font-family:Inter; font-size:11px; font-weight:500;'>"
                     "Your file transfer is "
                     "</span>"
-                    f"<span style='color:#39B95C; font-family:Inter; font-size:9px; font-weight:600;'>{clamped}%</span>"
-                    "<span style='color:#717171; font-family:Inter; font-size:9px; font-weight:500;'>"
+                    f"<span style='color:#39B95C; font-family:Inter; font-size:11px; font-weight:600;'>{clamped}%</span>"
+                    "<span style='color:#717171; font-family:Inter; font-size:11px; font-weight:500;'>"
                     " completed"
                     "</span>"
                 )
@@ -2122,8 +2216,14 @@ class App(QtWidgets.QWidget):
         self.refresh_paths()
 
     def set_status(self, message: str) -> None:
+        previous_status = self.status_text
         self.status_text = message
         self.setWindowTitle(f"{WINDOW_TITLE} - {message}")
+        if message != previous_status:
+            if message in {"변환 대기 중", "변환 진행 중"}:
+                self._start_transfer_flow_animation()
+            else:
+                self._stop_transfer_flow_animation()
         animated_base: str | None = None
         if message == "변환 진행 중":
             animated_base = "processing"
