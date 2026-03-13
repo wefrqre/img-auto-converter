@@ -1021,18 +1021,6 @@ class App(QtWidgets.QWidget):
                 background: #D9D9D9;
                 border: 1px solid #39B95C;
             }
-            QToolButton#historyScrollButton {
-                background: #FFFFFF;
-                border: none;
-                border-radius: 14px;
-                padding: 0px;
-            }
-            QToolButton#historyScrollButton:hover {
-                background: #FAFAFA;
-            }
-            QToolButton#historyScrollButton:pressed {
-                background: #F1F1F1;
-            }
             QPushButton#actionButton {
                 background: #F0F1F3;
                 border: none;
@@ -1336,48 +1324,11 @@ class App(QtWidgets.QWidget):
             self.thumbnail_scroll_area.viewport(),
             QtWidgets.QScroller.LeftMouseButtonGesture,
         )
-        self.thumbnail_scroll_area.horizontalScrollBar().valueChanged.connect(self.update_history_scroll_buttons)
-        self.thumbnail_scroll_area.horizontalScrollBar().rangeChanged.connect(
-            lambda _min, _max: self.update_history_scroll_buttons()
-        )
-        history_preview_layout.addWidget(self.thumbnail_scroll_area, 0, 0)
-
-        self.history_scroll_back_button = QtWidgets.QToolButton()
-        self.history_scroll_back_button.setObjectName("historyScrollButton")
-        self.history_scroll_back_button.setCursor(QtCore.Qt.PointingHandCursor)
-        self.history_scroll_back_button.setFixedSize(28, 28)
-        self.history_scroll_back_button.setIcon(QtGui.QIcon(self._load_arrow_back_icon_pixmap(11, 11)))
-        self.history_scroll_back_button.setIconSize(QtCore.QSize(11, 11))
-        self.history_scroll_back_button.clicked.connect(self.scroll_history_backward)
-        back_shadow = QtWidgets.QGraphicsDropShadowEffect(self.history_scroll_back_button)
-        back_shadow.setBlurRadius(8)
-        back_shadow.setOffset(0, 2)
-        back_shadow.setColor(QtGui.QColor(0, 0, 0, 25))
-        self.history_scroll_back_button.setGraphicsEffect(back_shadow)
         history_preview_layout.addWidget(
-            self.history_scroll_back_button,
+            self.thumbnail_scroll_area,
             0,
             0,
-            QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
-        )
-
-        self.history_scroll_button = QtWidgets.QToolButton()
-        self.history_scroll_button.setObjectName("historyScrollButton")
-        self.history_scroll_button.setCursor(QtCore.Qt.PointingHandCursor)
-        self.history_scroll_button.setFixedSize(28, 28)
-        self.history_scroll_button.setIcon(QtGui.QIcon(self._load_arrow_forward_icon_pixmap(11, 11)))
-        self.history_scroll_button.setIconSize(QtCore.QSize(11, 11))
-        self.history_scroll_button.clicked.connect(self.scroll_history_forward)
-        scroll_shadow = QtWidgets.QGraphicsDropShadowEffect(self.history_scroll_button)
-        scroll_shadow.setBlurRadius(8)
-        scroll_shadow.setOffset(0, 2)
-        scroll_shadow.setColor(QtGui.QColor(0, 0, 0, 25))
-        self.history_scroll_button.setGraphicsEffect(scroll_shadow)
-        history_preview_layout.addWidget(
-            self.history_scroll_button,
-            0,
-            0,
-            QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
+            QtCore.Qt.AlignHCenter | QtCore.Qt.AlignVCenter,
         )
 
         history_section.addWidget(history_preview_frame)
@@ -1779,16 +1730,6 @@ class App(QtWidgets.QWidget):
             QtWidgets.QStyle.SP_ArrowForward
         ).pixmap(width, height)
 
-    @staticmethod
-    def _load_arrow_back_icon_pixmap(width: int, height: int) -> QtGui.QPixmap:
-        pixmap = App._load_arrow_forward_icon_pixmap(width, height)
-        if pixmap.isNull():
-            return pixmap
-        return pixmap.transformed(
-            QtGui.QTransform().rotate(180),
-            QtCore.Qt.SmoothTransformation,
-        )
-
     def open_folder(self, path: Path) -> None:
         if not ensure_directory(path):
             QtWidgets.QMessageBox.critical(
@@ -1855,7 +1796,6 @@ class App(QtWidgets.QWidget):
             self.history_section_widget.setVisible(history_visible)
         if not history_visible:
             self.history_scroll_offset = 0
-        self.update_history_scroll_buttons()
 
     def history_visible_slots(self) -> int:
         return 4
@@ -1873,42 +1813,6 @@ class App(QtWidgets.QWidget):
         self.history_scroll_offset = max(0, min(self.history_scroll_offset, self.history_max_offset()))
         target_value = self.history_scroll_offset * self.history_scroll_step()
         scrollbar.setValue(min(scrollbar.maximum(), target_value))
-        self.update_history_scroll_buttons()
-
-    def update_history_scroll_buttons(self) -> None:
-        history_visible = len(self.history_entries) >= 2
-        if not history_visible or not self.thumbnail_scroll_area:
-            if self.history_scroll_button:
-                self.history_scroll_button.setVisible(False)
-            if self.history_scroll_back_button:
-                self.history_scroll_back_button.setVisible(False)
-            return
-
-        scrollbar = self.thumbnail_scroll_area.horizontalScrollBar()
-        max_offset = self.history_max_offset()
-        step = self.history_scroll_step()
-        if step > 0:
-            current_offset = int(round(scrollbar.value() / step))
-            self.history_scroll_offset = max(0, min(current_offset, max_offset))
-        at_start = self.history_scroll_offset <= 0
-        at_end = self.history_scroll_offset >= max_offset
-
-        if self.history_scroll_button:
-            self.history_scroll_button.setVisible(not at_end)
-        if self.history_scroll_back_button:
-            self.history_scroll_back_button.setVisible(not at_start)
-
-    def scroll_history_forward(self) -> None:
-        if not self.thumbnail_scroll_area:
-            return
-        self.history_scroll_offset = min(self.history_max_offset(), self.history_scroll_offset + 1)
-        self.sync_history_scroll_position()
-
-    def scroll_history_backward(self) -> None:
-        if not self.thumbnail_scroll_area:
-            return
-        self.history_scroll_offset = max(0, self.history_scroll_offset - 1)
-        self.sync_history_scroll_position()
 
     def _build_thumbnail_pixmap(self, file_path: Path) -> QtGui.QPixmap:
         canvas = QtGui.QPixmap(44, 44)
@@ -1974,13 +1878,17 @@ class App(QtWidgets.QWidget):
             button.update()
 
         visible_slots = self.history_visible_slots()
+        max_offset = self.history_max_offset()
         for index, (candidate_id, _path) in enumerate(self.history_entries):
             if candidate_id != entry_id:
                 continue
-            if index < self.history_scroll_offset:
-                self.history_scroll_offset = index
-            elif index >= self.history_scroll_offset + visible_slots:
-                self.history_scroll_offset = index - visible_slots + 1
+            if index == 0:
+                self.history_scroll_offset = 0
+            elif index == len(self.history_entries) - 1:
+                self.history_scroll_offset = max_offset
+            else:
+                center_slot = visible_slots // 2
+                self.history_scroll_offset = max(0, min(max_offset, index - center_slot))
             if self.thumbnail_scroll_area:
                 QtCore.QTimer.singleShot(0, self.sync_history_scroll_position)
             break
