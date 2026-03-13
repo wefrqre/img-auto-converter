@@ -96,7 +96,7 @@ except ModuleNotFoundError:
 
 APP_NAME = "응용 이미지 자동 변환기"
 WINDOW_TITLE = "Img Auto Converter"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.8"
 CONFIG_PATH = Path.home() / ".applied_image_auto_converter.json"
 UPDATE_URL_CONFIG_PATH = Path.home() / ".applied_image_auto_converter_update_url.txt"
 UPDATE_URL_BUNDLED_FILENAME = "update_url.txt"
@@ -110,12 +110,14 @@ ARROW_DOWN_SMALL_ICON_FILENAMES = (
     "arrow_donw_small.svg",
 )
 ARROW_UP_SMALL_ICON_FILENAMES = ("arrow_up_small.svg", "arrow-up-small.svg")
+ARROW_FORWARD_ICON_FILENAMES = ("arrow_forward.svg", "arrow-forward.svg")
 FIGMA_ICON_FILENAMES = ("Figma.svg", "figma.svg")
 LOCAL_ICON_FILENAMES = ("Local.svg", "local.svg")
 LOADING_ICON_FILENAMES = ("loading.svg", "Loading.svg")
-INFO_TOOLTIP_TEXT = "Figma에서 SVG 파일을 폴더에 저장하면\nPNG로 자동 변환됩니다."
+INFO_TOOLTIP_TEXT = "Figma에서 svg를 input(svg)폴더에 저장하면\nPNG로 자동 변환됩니다."
 DEFAULT_BASE_DIR = Path.home() / "Desktop" / "figma_exports"
-DEFAULT_INPUT_DIR = DEFAULT_BASE_DIR / "svg"
+LEGACY_INPUT_DIR = DEFAULT_BASE_DIR / "svg"
+DEFAULT_INPUT_DIR = DEFAULT_BASE_DIR / "input(svg)"
 DEFAULT_DPI = 96
 DPI_OPTIONS = (96, 192)
 PATH_HINTS = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
@@ -310,6 +312,15 @@ def ensure_directory(path: Path) -> bool:
         return True
     except OSError:
         return False
+
+
+def migrate_legacy_input_dir() -> None:
+    if DEFAULT_INPUT_DIR.exists() or not LEGACY_INPUT_DIR.exists():
+        return
+    try:
+        LEGACY_INPUT_DIR.rename(DEFAULT_INPUT_DIR)
+    except OSError:
+        return
 
 
 def normalize_dpi(value: object) -> int:
@@ -751,6 +762,19 @@ class App(QtWidgets.QWidget):
         self.status_animation_step = 0
         self.status_animation_base = ""
         self.info_labels: dict[str, QtWidgets.QLabel] = {}
+        self.history_count_label: QtWidgets.QLabel | None = None
+        self.history_section_widget: QtWidgets.QWidget | None = None
+        self.thumbnail_scroll_area: QtWidgets.QScrollArea | None = None
+        self.thumbnail_strip_widget: QtWidgets.QWidget | None = None
+        self.thumbnail_strip_layout: QtWidgets.QHBoxLayout | None = None
+        self.history_scroll_back_button: QtWidgets.QToolButton | None = None
+        self.history_scroll_button: QtWidgets.QToolButton | None = None
+        self.history_button_group: QtWidgets.QButtonGroup | None = None
+        self.history_entries: list[tuple[int, Path]] = []
+        self.history_buttons: dict[int, QtWidgets.QToolButton] = {}
+        self.selected_history_entry_id: int | None = None
+        self.history_next_id = 1
+        self.history_scroll_offset = 0
         self.bottom_card: QtWidgets.QFrame | None = None
         self.shell_card: QtWidgets.QFrame | None = None
         self.bottom_layout: QtWidgets.QVBoxLayout | None = None
@@ -787,6 +811,10 @@ class App(QtWidgets.QWidget):
         self.rescan_timer.setSingleShot(True)
         self.rescan_timer.timeout.connect(self.reconcile_recent_svgs)
 
+        self.directory_health_timer = QtCore.QTimer(self)
+        self.directory_health_timer.timeout.connect(self.ensure_runtime_directories)
+        self.directory_health_timer.start(1200)
+
         if self.tool_paths.missing:
             self.show_dependency_warning()
         else:
@@ -795,6 +823,7 @@ class App(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(900, self.check_for_updates_async)
 
     def first_launch_setup(self) -> None:
+        migrate_legacy_input_dir()
         created: list[Path] = []
         failed: list[Path] = []
         for directory in (DEFAULT_BASE_DIR, self.input_dir, self.output_dir):
@@ -827,9 +856,9 @@ class App(QtWidgets.QWidget):
         dialog.setIcon(QtWidgets.QMessageBox.Information)
         dialog.setWindowTitle("작업 폴더가 준비됐어요")
         dialog.setText(
-            "SVG 파일을 svg 폴더에 저장하면\n"
-            "PNG가 자동으로 생성됩니다.\n\n"
-            "폴더 위치 : Desktop > figma_exports"
+            "Figma에서 svg를 input(svg)폴더에 저장하면\n"
+            "자동변환됩니다.\n\n"
+            "경로: Desktop > Figma_exports"
         )
         confirm_button = dialog.addButton("확인", QtWidgets.QMessageBox.AcceptRole)
         open_button = dialog.addButton("폴더 열기", QtWidgets.QMessageBox.ActionRole)
@@ -942,10 +971,67 @@ class App(QtWidgets.QWidget):
                 font-size: 9px;
                 font-weight: 500;
             }
+            QLabel#historyCountLabel {
+                background: transparent;
+                color: #8D8D8D;
+                font-size: 9px;
+                font-weight: 500;
+            }
             QLabel#detailValue {
                 color: #656565;
                 font-size: 9px;
                 font-weight: 400;
+            }
+            QScrollArea#thumbnailScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QScrollArea#thumbnailScrollArea QWidget {
+                background: transparent;
+            }
+            QScrollArea#thumbnailScrollArea > QWidget > QWidget {
+                background: transparent;
+            }
+            QWidget#thumbnailStrip {
+                background: transparent;
+                border: none;
+            }
+            QWidget#historyPreviewFrame {
+                background: transparent;
+                border: none;
+            }
+            QWidget#historySectionWidget {
+                background: transparent;
+                border: none;
+            }
+            QToolButton#historyThumbnail {
+                background: #D9D9D9;
+                border: 1px solid transparent;
+                border-radius: 2px;
+                padding: 0px;
+            }
+            QToolButton#historyThumbnail:hover {
+                background: #E2E2E2;
+            }
+            QToolButton#historyThumbnail:checked {
+                background: #D9D9D9;
+                border: 1px solid #39B95C;
+            }
+            QToolButton#historyThumbnail[selected="true"] {
+                background: #D9D9D9;
+                border: 1px solid #39B95C;
+            }
+            QToolButton#historyScrollButton {
+                background: #FFFFFF;
+                border: none;
+                border-radius: 14px;
+                padding: 0px;
+            }
+            QToolButton#historyScrollButton:hover {
+                background: #FAFAFA;
+            }
+            QToolButton#historyScrollButton:pressed {
+                background: #F1F1F1;
             }
             QPushButton#actionButton {
                 background: #F0F1F3;
@@ -1204,18 +1290,111 @@ class App(QtWidgets.QWidget):
 
         detail_body = QtWidgets.QFrame()
         detail_body.setObjectName("detailBody")
-        detail_body_layout = QtWidgets.QGridLayout(detail_body)
-        detail_body_layout.setContentsMargins(12, 8, 12, 8)
-        detail_body_layout.setHorizontalSpacing(12)
-        detail_body_layout.setVerticalSpacing(7)
+        detail_body_layout = QtWidgets.QVBoxLayout(detail_body)
+        detail_body_layout.setContentsMargins(12, 10, 12, 8)
+        detail_body_layout.setSpacing(20)
+
+        self.history_section_widget = QtWidgets.QWidget()
+        self.history_section_widget.setObjectName("historySectionWidget")
+        self.history_section_widget.setAttribute(QtCore.Qt.WA_StyledBackground, False)
+        history_section = QtWidgets.QVBoxLayout(self.history_section_widget)
+        history_section.setContentsMargins(0, 0, 0, 0)
+        history_section.setSpacing(8)
+
+        self.history_count_label = QtWidgets.QLabel("변환 내역 0건")
+        self.history_count_label.setObjectName("historyCountLabel")
+        history_section.addWidget(self.history_count_label, 0, QtCore.Qt.AlignLeft)
+
+        history_preview_frame = QtWidgets.QWidget()
+        history_preview_frame.setObjectName("historyPreviewFrame")
+        history_preview_frame.setAttribute(QtCore.Qt.WA_StyledBackground, False)
+        history_preview_frame.setFixedWidth(208)
+        history_preview_frame.setFixedHeight(46)
+        history_preview_layout = QtWidgets.QGridLayout(history_preview_frame)
+        history_preview_layout.setContentsMargins(0, 0, 0, 0)
+        history_preview_layout.setHorizontalSpacing(0)
+        history_preview_layout.setVerticalSpacing(0)
+
+        self.thumbnail_scroll_area = QtWidgets.QScrollArea()
+        self.thumbnail_scroll_area.setObjectName("thumbnailScrollArea")
+        self.thumbnail_scroll_area.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.thumbnail_scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.thumbnail_scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.thumbnail_scroll_area.setWidgetResizable(False)
+        self.thumbnail_scroll_area.setFixedWidth(208)
+        self.thumbnail_scroll_area.setFixedHeight(46)
+        self.thumbnail_scroll_area.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        self.thumbnail_scroll_area.viewport().setStyleSheet("background: transparent;")
+
+        self.thumbnail_strip_widget = QtWidgets.QWidget()
+        self.thumbnail_strip_widget.setObjectName("thumbnailStrip")
+        self.thumbnail_strip_layout = QtWidgets.QHBoxLayout(self.thumbnail_strip_widget)
+        self.thumbnail_strip_layout.setContentsMargins(0, 0, 0, 0)
+        self.thumbnail_strip_layout.setSpacing(4)
+        self.thumbnail_scroll_area.setWidget(self.thumbnail_strip_widget)
+        QtWidgets.QScroller.grabGesture(
+            self.thumbnail_scroll_area.viewport(),
+            QtWidgets.QScroller.LeftMouseButtonGesture,
+        )
+        self.thumbnail_scroll_area.horizontalScrollBar().valueChanged.connect(self.update_history_scroll_buttons)
+        self.thumbnail_scroll_area.horizontalScrollBar().rangeChanged.connect(
+            lambda _min, _max: self.update_history_scroll_buttons()
+        )
+        history_preview_layout.addWidget(self.thumbnail_scroll_area, 0, 0)
+
+        self.history_scroll_back_button = QtWidgets.QToolButton()
+        self.history_scroll_back_button.setObjectName("historyScrollButton")
+        self.history_scroll_back_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self.history_scroll_back_button.setFixedSize(28, 28)
+        self.history_scroll_back_button.setIcon(QtGui.QIcon(self._load_arrow_back_icon_pixmap(11, 11)))
+        self.history_scroll_back_button.setIconSize(QtCore.QSize(11, 11))
+        self.history_scroll_back_button.clicked.connect(self.scroll_history_backward)
+        back_shadow = QtWidgets.QGraphicsDropShadowEffect(self.history_scroll_back_button)
+        back_shadow.setBlurRadius(8)
+        back_shadow.setOffset(0, 2)
+        back_shadow.setColor(QtGui.QColor(0, 0, 0, 25))
+        self.history_scroll_back_button.setGraphicsEffect(back_shadow)
+        history_preview_layout.addWidget(
+            self.history_scroll_back_button,
+            0,
+            0,
+            QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+        )
+
+        self.history_scroll_button = QtWidgets.QToolButton()
+        self.history_scroll_button.setObjectName("historyScrollButton")
+        self.history_scroll_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self.history_scroll_button.setFixedSize(28, 28)
+        self.history_scroll_button.setIcon(QtGui.QIcon(self._load_arrow_forward_icon_pixmap(11, 11)))
+        self.history_scroll_button.setIconSize(QtCore.QSize(11, 11))
+        self.history_scroll_button.clicked.connect(self.scroll_history_forward)
+        scroll_shadow = QtWidgets.QGraphicsDropShadowEffect(self.history_scroll_button)
+        scroll_shadow.setBlurRadius(8)
+        scroll_shadow.setOffset(0, 2)
+        scroll_shadow.setColor(QtGui.QColor(0, 0, 0, 25))
+        self.history_scroll_button.setGraphicsEffect(scroll_shadow)
+        history_preview_layout.addWidget(
+            self.history_scroll_button,
+            0,
+            0,
+            QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
+        )
+
+        history_section.addWidget(history_preview_frame)
+        detail_body_layout.addWidget(self.history_section_widget)
+
+        info_row = QtWidgets.QGridLayout()
+        info_row.setContentsMargins(0, 0, 0, 0)
+        info_row.setHorizontalSpacing(12)
+        info_row.setVerticalSpacing(7)
 
         fields = [
             "파일명",
             "파일 크기",
             "이미지 크기",
             "DPI",
-            "색상 모드",
-            "비트 깊이",
+            "색상모드",
+            "비트",
             "PNG 타입",
             "알파 채널",
             "색상 프로파일",
@@ -1230,11 +1409,12 @@ class App(QtWidgets.QWidget):
             value_label.setWordWrap(False)
             value_label.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed)
             value_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-            detail_body_layout.addWidget(key_label, row, 0, QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
-            detail_body_layout.addWidget(value_label, row, 1, QtCore.Qt.AlignVCenter | QtCore.Qt.AlignRight)
+            info_row.addWidget(key_label, row, 0, QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
+            info_row.addWidget(value_label, row, 1, QtCore.Qt.AlignVCenter | QtCore.Qt.AlignRight)
             self.info_labels[field] = value_label
-        detail_body_layout.setColumnStretch(0, 1)
-        detail_body_layout.setColumnStretch(1, 1)
+        info_row.setColumnStretch(0, 1)
+        info_row.setColumnStretch(1, 1)
+        detail_body_layout.addLayout(info_row)
         bottom_content_layout.addWidget(detail_body)
         self.bottom_layout.addWidget(self.bottom_content_widget)
         shell_layout.addWidget(self.bottom_card)
@@ -1278,7 +1458,10 @@ class App(QtWidgets.QWidget):
         self.status_animation_timer = QtCore.QTimer(self)
         self.status_animation_timer.setInterval(420)
         self.status_animation_timer.timeout.connect(self._tick_status_animation)
+        self.history_button_group = QtWidgets.QButtonGroup(self)
+        self.history_button_group.setExclusive(True)
         self.update_runtime_summary()
+        self.update_history_count()
         self.update_transfer_progress(0)
         self.set_bottom_collapsed(True)
 
@@ -1587,6 +1770,25 @@ class App(QtWidgets.QWidget):
             return pixmap
         return App._load_arrow_up_icon_pixmap(max(width, height))
 
+    @staticmethod
+    def _load_arrow_forward_icon_pixmap(width: int, height: int) -> QtGui.QPixmap:
+        pixmap = App._load_svg_pixmap(ARROW_FORWARD_ICON_FILENAMES, width, height)
+        if not pixmap.isNull():
+            return pixmap
+        return QtWidgets.QApplication.style().standardIcon(
+            QtWidgets.QStyle.SP_ArrowForward
+        ).pixmap(width, height)
+
+    @staticmethod
+    def _load_arrow_back_icon_pixmap(width: int, height: int) -> QtGui.QPixmap:
+        pixmap = App._load_arrow_forward_icon_pixmap(width, height)
+        if pixmap.isNull():
+            return pixmap
+        return pixmap.transformed(
+            QtGui.QTransform().rotate(180),
+            QtCore.Qt.SmoothTransformation,
+        )
+
     def open_folder(self, path: Path) -> None:
         if not ensure_directory(path):
             QtWidgets.QMessageBox.critical(
@@ -1646,7 +1848,147 @@ class App(QtWidgets.QWidget):
             app.processEvents()
 
     def update_history_count(self) -> None:
-        return
+        history_visible = len(self.history_entries) >= 2
+        if self.history_count_label:
+            self.history_count_label.setText(f"변환 내역 {len(self.history_entries)}건")
+        if self.history_section_widget:
+            self.history_section_widget.setVisible(history_visible)
+        if not history_visible:
+            self.history_scroll_offset = 0
+        self.update_history_scroll_buttons()
+
+    def history_visible_slots(self) -> int:
+        return 4
+
+    def history_scroll_step(self) -> int:
+        return 50
+
+    def history_max_offset(self) -> int:
+        return max(0, len(self.history_entries) - self.history_visible_slots())
+
+    def sync_history_scroll_position(self) -> None:
+        if not self.thumbnail_scroll_area:
+            return
+        scrollbar = self.thumbnail_scroll_area.horizontalScrollBar()
+        self.history_scroll_offset = max(0, min(self.history_scroll_offset, self.history_max_offset()))
+        target_value = self.history_scroll_offset * self.history_scroll_step()
+        scrollbar.setValue(min(scrollbar.maximum(), target_value))
+        self.update_history_scroll_buttons()
+
+    def update_history_scroll_buttons(self) -> None:
+        history_visible = len(self.history_entries) >= 2
+        if not history_visible or not self.thumbnail_scroll_area:
+            if self.history_scroll_button:
+                self.history_scroll_button.setVisible(False)
+            if self.history_scroll_back_button:
+                self.history_scroll_back_button.setVisible(False)
+            return
+
+        scrollbar = self.thumbnail_scroll_area.horizontalScrollBar()
+        max_offset = self.history_max_offset()
+        step = self.history_scroll_step()
+        if step > 0:
+            current_offset = int(round(scrollbar.value() / step))
+            self.history_scroll_offset = max(0, min(current_offset, max_offset))
+        at_start = self.history_scroll_offset <= 0
+        at_end = self.history_scroll_offset >= max_offset
+
+        if self.history_scroll_button:
+            self.history_scroll_button.setVisible(not at_end)
+        if self.history_scroll_back_button:
+            self.history_scroll_back_button.setVisible(not at_start)
+
+    def scroll_history_forward(self) -> None:
+        if not self.thumbnail_scroll_area:
+            return
+        self.history_scroll_offset = min(self.history_max_offset(), self.history_scroll_offset + 1)
+        self.sync_history_scroll_position()
+
+    def scroll_history_backward(self) -> None:
+        if not self.thumbnail_scroll_area:
+            return
+        self.history_scroll_offset = max(0, self.history_scroll_offset - 1)
+        self.sync_history_scroll_position()
+
+    def _build_thumbnail_pixmap(self, file_path: Path) -> QtGui.QPixmap:
+        canvas = QtGui.QPixmap(44, 44)
+        canvas.fill(QtGui.QColor("#D9D9D9"))
+        if not file_path.exists():
+            return canvas
+
+        preview = QtGui.QPixmap(str(file_path))
+        if preview.isNull():
+            return canvas
+
+        scaled = preview.scaled(
+            44,
+            44,
+            QtCore.Qt.KeepAspectRatio,
+            QtCore.Qt.SmoothTransformation,
+        )
+        painter = QtGui.QPainter(canvas)
+        x = int((44 - scaled.width()) / 2)
+        y = int((44 - scaled.height()) / 2)
+        painter.drawPixmap(x, y, scaled)
+        painter.end()
+        return canvas
+
+    def add_history_entry(self, file_path: Path) -> None:
+        if not self.thumbnail_strip_layout or not self.history_button_group:
+            return
+
+        entry_id = self.history_next_id
+        self.history_next_id += 1
+        self.history_entries.append((entry_id, file_path))
+
+        button = QtWidgets.QToolButton()
+        button.setObjectName("historyThumbnail")
+        button.setCheckable(True)
+        button.setCursor(QtCore.Qt.PointingHandCursor)
+        button.setAutoRaise(False)
+        button.setFixedSize(46, 46)
+        button.setIcon(QtGui.QIcon(self._build_thumbnail_pixmap(file_path)))
+        button.setIconSize(QtCore.QSize(44, 44))
+        button.clicked.connect(lambda _checked=False, target_id=entry_id: self.select_history_entry(target_id))
+        self.history_button_group.addButton(button, entry_id)
+        self.history_buttons[entry_id] = button
+        self.thumbnail_strip_layout.addWidget(button, 0, QtCore.Qt.AlignLeft)
+        if self.thumbnail_strip_widget:
+            total_width = max(46, (46 * len(self.history_entries)) + (4 * max(0, len(self.history_entries) - 1)))
+            self.thumbnail_strip_widget.setFixedSize(total_width, 46)
+            self.thumbnail_strip_widget.updateGeometry()
+        self.update_history_count()
+        self.select_history_entry(entry_id)
+        self.history_scroll_offset = self.history_max_offset()
+        if self.thumbnail_scroll_area:
+            QtCore.QTimer.singleShot(0, self.sync_history_scroll_position)
+
+    def select_history_entry(self, entry_id: int) -> None:
+        self.selected_history_entry_id = entry_id
+        for candidate_id, button in self.history_buttons.items():
+            is_selected = candidate_id == entry_id
+            button.setChecked(is_selected)
+            button.setProperty("selected", is_selected)
+            button.style().unpolish(button)
+            button.style().polish(button)
+            button.update()
+
+        visible_slots = self.history_visible_slots()
+        for index, (candidate_id, _path) in enumerate(self.history_entries):
+            if candidate_id != entry_id:
+                continue
+            if index < self.history_scroll_offset:
+                self.history_scroll_offset = index
+            elif index >= self.history_scroll_offset + visible_slots:
+                self.history_scroll_offset = index - visible_slots + 1
+            if self.thumbnail_scroll_area:
+                QtCore.QTimer.singleShot(0, self.sync_history_scroll_position)
+            break
+
+        for candidate_id, path in self.history_entries:
+            if candidate_id == entry_id:
+                self.show_file_info(path)
+                break
 
     def update_transfer_progress(self, percent: int) -> None:
         clamped = max(0, min(100, int(percent)))
@@ -1725,8 +2067,8 @@ class App(QtWidgets.QWidget):
             "파일 크기": "-",
             "이미지 크기": "-",
             "DPI": "-",
-            "색상 모드": "RGB",
-            "비트 깊이": "-",
+            "색상모드": "RGB",
+            "비트": "-",
             "PNG 타입": "-",
             "알파 채널": "-",
             "색상 프로파일": "-",
@@ -1787,10 +2129,10 @@ class App(QtWidgets.QWidget):
         return {
             "파일명": file_path.name,
             "파일 크기": format_file_size(len(raw)),
-            "이미지 크기": f"{width} x {height} (pixel)",
+            "이미지 크기": f"{width} x {height} px",
             "DPI": dpi_text,
-            "색상 모드": "RGB",
-            "비트 깊이": f"{bit_depth * channels}bit",
+            "색상모드": "RGB",
+            "비트": f"{bit_depth * channels} bit",
             "PNG 타입": png_type,
             "알파 채널": "있음" if color_type in (4, 6) else "없음",
             "색상 프로파일": profile_name,
@@ -1868,6 +2210,48 @@ class App(QtWidgets.QWidget):
             self.show_dependency_warning()
             return False
         return True
+
+    def restart_watch_observer(self) -> None:
+        observer = self.observer
+        if observer is not None:
+            self.observer = None
+            observer.stop()
+            observer.join(timeout=3)
+
+        if not self.refresh_tools():
+            return
+        if not ensure_directory(self.input_dir):
+            self.set_status("폴더 권한 필요")
+            return
+
+        self.observer = Observer()
+        handler = SvgEventHandler(self.enqueue_event)
+        self.observer.schedule(handler, str(self.input_dir), recursive=True)
+        self.observer.start()
+        self.watch_started_at = time.time()
+        self.rescan_timer.start(200)
+        if not self.processing_convert_queue and not self.pending_convert_paths:
+            self.set_status("변환 대기 중")
+
+    def ensure_runtime_directories(self) -> None:
+        recreated_any = False
+        recreated_input_dir = False
+        for directory in (DEFAULT_BASE_DIR, self.input_dir, self.output_dir):
+            if directory.exists():
+                continue
+            if ensure_directory(directory):
+                recreated_any = True
+                if directory == self.input_dir:
+                    recreated_input_dir = True
+                continue
+            self.set_status("폴더 권한 필요")
+            return
+
+        if recreated_any:
+            self.refresh_paths()
+        if recreated_input_dir:
+            if self.observer:
+                self.restart_watch_observer()
 
     def start_watch(self) -> None:
         if self.observer:
@@ -2068,8 +2452,9 @@ class App(QtWidgets.QWidget):
             self.run_pipeline(svg_path, output_path)
             self.last_processed_svg_mtimes[str(svg_path)] = current_mtime
             self.finish_transfer_step(True)
+            self.add_history_entry(output_path)
+            self.set_bottom_collapsed(False)
             self.append_log_entry(f"변환 완료 {svg_path.name}", output_path)
-            self.show_file_info(output_path)
             self.flush_ui()
             if self.observer and not self.pending_convert_paths:
                 self.set_status("변환 대기 중")
