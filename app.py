@@ -96,7 +96,7 @@ except ModuleNotFoundError:
 
 APP_NAME = "응용 이미지 자동 변환기"
 WINDOW_TITLE = "Img Auto Converter"
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.0.2"
 CONFIG_PATH = Path.home() / ".applied_image_auto_converter.json"
 UPDATE_URL_CONFIG_PATH = Path.home() / ".applied_image_auto_converter_update_url.txt"
 UPDATE_URL_BUNDLED_FILENAME = "update_url.txt"
